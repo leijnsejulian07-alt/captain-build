@@ -1,11 +1,13 @@
 {
   "schemaVersion": 1,
   "status": "pending-local-application",
+  "purpose": "Fail-closed contract for persisting distilled research metadata into Captain Project State.",
   "scope": {
     "requires": ["project_id", "repo_scope"],
     "storageKey": "research",
     "crossRepoSharing": false,
-    "crossChatRawSharing": false
+    "crossChatRawSharing": false,
+    "persistChatId": false
   },
   "limits": {
     "maxQueries": 3,
@@ -13,7 +15,9 @@
     "maxSources": 10,
     "maxTitleChars": 300,
     "maxUrlChars": 2048,
-    "maxMatchedQueriesPerSource": 3
+    "maxProviderChars": 80,
+    "maxMatchedQueriesPerSource": 3,
+    "maxHosts": 10
   },
   "sourceFields": [
     "title",
@@ -21,6 +25,13 @@
     "provider",
     "matched_queries",
     "score"
+  ],
+  "aggregateFields": [
+    "last_queries",
+    "last_retrieved_at",
+    "source_count",
+    "host_count",
+    "sources"
   ],
   "forbiddenPersistence": [
     "snippet",
@@ -32,22 +43,37 @@
     "authorization",
     "session",
     "chat_id",
+    "preview_state",
+    "builder_state",
+    "worktree_state",
     "generated_conclusion"
   ],
   "failClosed": {
     "urlSchemes": ["http", "https"],
     "requireHost": true,
+    "dropInvalidSources": true,
     "persistenceFailureMustNotBreakResearchResponse": true,
+    "invalidOrMissingScopePersistsNothing": true,
     "projectStateSecretRedactionRemainsAuthoritative": true
   },
+  "activationGate": {
+    "backupBeforeEdit": true,
+    "compileRequired": true,
+    "routerRegressionRequired": true,
+    "isolatedCapabilityRegressionRequired": true,
+    "doctorAfterRestartRequired": true,
+    "rollbackOnAnyFailedGate": true
+  },
   "acceptance": [
-    "metadata-only persistence",
+    "metadata-only persistence with provenance",
+    "no snippet or raw provider content stored",
     "secret-like values redacted",
     "same project different repo isolation",
     "unscoped request persists nothing",
+    "invalid URL source dropped before persistence",
     "persistence failure preserves research result",
     "compile and router regression green",
-    "isolated capability regression green",
+    "isolated capability/plugin/connector regression green",
     "Doctor core green after restart"
   ]
 }
