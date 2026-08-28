@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "status": "pending-local-application",
+  "scope": {
+    "requires": ["project_id", "repo_scope"],
+    "storageKey": "research",
+    "crossRepoSharing": false,
+    "crossChatRawSharing": false
+  },
+  "limits": {
+    "maxQueries": 3,
+    "maxQueryChars": 500,
+    "maxSources": 10,
+    "maxTitleChars": 300,
+    "maxUrlChars": 2048,
+    "maxMatchedQueriesPerSource": 3
+  },
+  "sourceFields": [
+    "title",
+    "url",
+    "provider",
+    "matched_queries",
+    "score"
+  ],
+  "forbiddenPersistence": [
+    "snippet",
+    "page_text",
+    "html",
+    "raw_provider_response",
+    "token",
+    "cookie",
+    "authorization",
+    "session",
+    "chat_id",
+    "generated_conclusion"
+  ],
+  "failClosed": {
+    "urlSchemes": ["http", "https"],
+    "requireHost": true,
+    "persistenceFailureMustNotBreakResearchResponse": true,
+    "projectStateSecretRedactionRemainsAuthoritative": true
+  },
+  "acceptance": [
+    "metadata-only persistence",
+    "secret-like values redacted",
+    "same project different repo isolation",
+    "unscoped request persists nothing",
+    "persistence failure preserves research result",
+    "compile and router regression green",
+    "isolated capability regression green",
+    "Doctor core green after restart"
+  ]
+}
