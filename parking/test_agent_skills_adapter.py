@@ -23,6 +23,7 @@ class AgentSkillsAdapterTests(unittest.TestCase):
             repo = Path(td); skill = self._write_skill(repo, "Summarize a local document.")
             meta = validate_skill(skill, chat_id="chat-a", project_id="project-a", repo_scope=str(repo))
             self.assertEqual(meta.scope, "project"); self.assertEqual(len(meta.content_hash), 64)
+            self.assertEqual(len(meta.source_path_hash), 64); self.assertFalse(hasattr(meta, "source_path"))
 
     def test_scope_context_is_required(self):
         with tempfile.TemporaryDirectory() as td:
@@ -72,11 +73,23 @@ class AgentSkillsAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(SkillValidationError, "size limit"):
                 validate_skill(skill, chat_id="c", project_id="p", repo_scope=str(repo))
 
-    def test_global_skill_still_requires_active_scope_context(self):
+    def test_global_skill_requires_configured_root(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); skill = self._write_skill(root, "Safe body", scope="global")
-            meta = validate_skill(skill, chat_id="c", project_id="p", repo_scope=str(root / "some-repo"))
-            self.assertEqual(meta.scope, "global")
+            with self.assertRaisesRegex(SkillValidationError, "global_skills_root"):
+                validate_skill(skill, chat_id="c", project_id="p", repo_scope=str(root / "repo"))
+
+    def test_global_skill_is_confined_to_configured_root(self):
+        with tempfile.TemporaryDirectory() as allowed_td, tempfile.TemporaryDirectory() as other_td:
+            skill = self._write_skill(Path(other_td), "Safe body", scope="global")
+            with self.assertRaisesRegex(SkillValidationError, "escapes configured skills root"):
+                validate_skill(skill, chat_id="c", project_id="p", repo_scope=allowed_td, global_skills_root=allowed_td)
+
+    def test_valid_global_skill_within_configured_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); skill = self._write_skill(root, "Safe body", scope="global")
+            meta = validate_skill(skill, chat_id="c", project_id="p", repo_scope=str(root / "repo"), global_skills_root=root)
+            self.assertEqual(meta.scope, "global"); self.assertEqual(len(meta.source_path_hash), 64)
 
 
 if __name__ == "__main__":
