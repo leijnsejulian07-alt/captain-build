@@ -35,7 +35,7 @@ class SkillMetadata:
     scope: str
     permissions: tuple[str, ...]
     content_hash: str
-    source_path: str
+    source_path_hash: str
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -68,12 +68,20 @@ def _contains_blocked_instruction(body: str) -> str | None:
     return next((pattern for pattern in BLOCKED_PATTERNS if pattern in low), None)
 
 
+def _require_within(path: Path, root: Path, message: str) -> None:
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise SkillValidationError(message) from exc
+
+
 def validate_skill(
     path: str | Path,
     *,
     chat_id: str,
     project_id: str,
     repo_scope: str,
+    global_skills_root: str | Path | None = None,
     granted_permissions: Iterable[str] = (),
     enabled: bool = True,
 ) -> SkillMetadata:
@@ -105,10 +113,12 @@ def validate_skill(
     if scope not in ALLOWED_SCOPES:
         raise SkillValidationError(f"unsupported scope: {scope}")
     if scope == "project":
-        try:
-            p.relative_to(repo)
-        except ValueError as exc:
-            raise SkillValidationError("project skill escapes active repo_scope") from exc
+        _require_within(p, repo, "project skill escapes active repo_scope")
+    else:
+        if global_skills_root is None:
+            raise SkillValidationError("global skill requires configured global_skills_root")
+        global_root = Path(global_skills_root).expanduser().resolve()
+        _require_within(p, global_root, "global skill escapes configured skills root")
 
     declared = _permissions(meta.get("permissions", ""))
     unknown = [perm for perm in declared if perm not in ALLOWED_PERMISSIONS]
@@ -127,5 +137,5 @@ def validate_skill(
         id=meta["id"].strip(), name=meta["name"].strip(),
         description=meta["description"].strip(), scope=scope,
         permissions=declared, content_hash=sha256(raw.encode("utf-8")).hexdigest(),
-        source_path=str(p),
+        source_path_hash=sha256(str(p).encode("utf-8")).hexdigest(),
     )
