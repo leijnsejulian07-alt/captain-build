@@ -7,26 +7,28 @@ class ReconciliationStateTests(unittest.TestCase):
     def setUp(self):
         self.sha = "a" * 40
         self.other_sha = "b" * 40
-        self.empty = {"schema_version": 2, "local_base_sha": self.sha, "components": {}}
+        self.empty = {"schema_version": 3, "local_base_sha": self.sha, "components": {}}
         self.passed = {"unit": "passed", "doctor": "passed", "router": "passed", "project_isolation": "passed", "repo_isolation": "passed"}
 
     def test_pending_to_verified_to_integrated(self):
         state = transition(self.empty, "scoped-jobs", "verified", self.passed)
+        self.assertEqual(len(state["components"]["scoped-jobs"]["evidence_digest"]), 64)
         state = transition(state, "scoped-jobs", "integrated", self.passed)
         self.assertEqual(state["components"]["scoped-jobs"]["state"], "integrated")
         self.assertEqual(state["components"]["scoped-jobs"]["verified_base_sha"], self.sha)
 
-    def test_integrated_requires_same_verified_evidence(self):
+    def test_tampered_evidence_digest_fails_closed(self):
         state = transition(self.empty, "scoped-jobs", "verified", self.passed)
-        changed = dict(self.passed, router="passed")
-        changed["unit"] = "passed"
-        changed["doctor"] = "passed"
-        changed["project_isolation"] = "passed"
-        changed["repo_isolation"] = "passed"
-        self.assertEqual(changed, self.passed)
-        state["components"]["scoped-jobs"]["checks"] = dict(self.passed, router="failed")
+        state["components"]["scoped-jobs"]["evidence_digest"] = "0" * 64
         with self.assertRaises(ValueError):
-            transition(state, "scoped-jobs", "integrated", self.passed)
+            validate_state(state)
+
+    def test_tampered_checks_fail_closed_even_if_still_passing(self):
+        state = transition(self.empty, "scoped-jobs", "verified", self.passed)
+        state["components"]["scoped-jobs"]["checks"] = dict(self.passed)
+        state["components"]["scoped-jobs"]["checks"]["unit"] = "failed"
+        with self.assertRaises(ValueError):
+            validate_state(state)
 
     def test_verified_requires_exact_passing_checks(self):
         with self.assertRaises(ValueError):
@@ -37,7 +39,7 @@ class ReconciliationStateTests(unittest.TestCase):
             transition(self.empty, "scoped-jobs", "verified", dict(self.passed, router="failed"))
 
     def test_verification_requires_local_base(self):
-        no_base = {"schema_version": 2, "local_base_sha": None, "components": {}}
+        no_base = {"schema_version": 3, "local_base_sha": None, "components": {}}
         with self.assertRaises(ValueError):
             transition(no_base, "scoped-jobs", "verified", self.passed)
 
@@ -48,7 +50,7 @@ class ReconciliationStateTests(unittest.TestCase):
             validate_state(state)
 
     def test_local_base_can_only_change_before_verification(self):
-        state = set_local_base({"schema_version": 2, "local_base_sha": None, "components": {}}, self.sha)
+        state = set_local_base({"schema_version": 3, "local_base_sha": None, "components": {}}, self.sha)
         self.assertEqual(state["local_base_sha"], self.sha)
         state = transition(state, "scoped-jobs", "verified", self.passed)
         with self.assertRaises(ValueError):
@@ -72,17 +74,19 @@ class ReconciliationStateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 transition(self.empty, component_id, "rejected")
 
-    def test_unknown_fields_and_bad_sha_fail_closed(self):
+    def test_unknown_fields_bad_sha_and_old_schema_fail_closed(self):
         with self.assertRaises(ValueError):
-            validate_state({"schema_version": 2, "local_base_sha": self.sha, "components": {}, "token": "secret"})
+            validate_state({"schema_version": 3, "local_base_sha": self.sha, "components": {}, "token": "secret"})
         with self.assertRaises(ValueError):
-            validate_state({"schema_version": 2, "local_base_sha": "main", "components": {}})
+            validate_state({"schema_version": 3, "local_base_sha": "main", "components": {}})
         with self.assertRaises(ValueError):
-            validate_state({"schema_version": 2, "local_base_sha": self.sha, "components": {"x": {"state": "pending", "note": "raw"}}})
+            validate_state({"schema_version": 2, "local_base_sha": self.sha, "components": {}})
+        with self.assertRaises(ValueError):
+            validate_state({"schema_version": 3, "local_base_sha": self.sha, "components": {"x": {"state": "pending", "note": "raw"}}})
 
     def test_malformed_state_fails_closed(self):
         with self.assertRaises(ValueError):
-            validate_state({"schema_version": 2, "local_base_sha": self.sha, "components": {"x": {"state": "magic"}}})
+            validate_state({"schema_version": 3, "local_base_sha": self.sha, "components": {"x": {"state": "magic"}}})
 
 
 if __name__ == "__main__":
