@@ -72,13 +72,19 @@ def transition(data: dict, component_id: str, new_state: str, checks: dict | Non
     validate_state(data)
     if new_state not in ALLOWED_STATES or not isinstance(component_id, str) or not COMPONENT_ID_RE.fullmatch(component_id):
         raise ValueError("invalid transition")
-    current = data["components"].get(component_id, {"state": "pending"})["state"]
+    current_row = data["components"].get(component_id, {"state": "pending"})
+    current = current_row["state"]
     allowed = {"pending": {"verified", "rejected"}, "verified": {"integrated", "rejected"}, "integrated": set(), "rejected": set()}
     if new_state not in allowed[current]:
         raise ValueError("non-monotonic transition")
-    if new_state in {"verified", "integrated"}:
+    if new_state == "verified":
         _validate_checks(checks)
         _validate_sha(data.get("local_base_sha"))
+    elif new_state == "integrated":
+        _validate_checks(checks)
+        _validate_sha(data.get("local_base_sha"))
+        if current_row.get("verified_base_sha") != data["local_base_sha"] or checks != current_row.get("checks"):
+            raise ValueError("integration requires unchanged verified evidence")
     elif checks is not None:
         raise ValueError("checks only allowed for verified/integrated state")
     next_data = json.loads(json.dumps(data))
