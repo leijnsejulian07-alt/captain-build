@@ -15,6 +15,8 @@ def load_manifest(path: str | Path) -> dict:
 
 
 def validate_manifest(data: dict) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("manifest must be an object")
     if data.get("schema_version") != 1:
         raise ValueError("unsupported schema_version")
     checks = data.get("required_local_checks")
@@ -22,17 +24,24 @@ def validate_manifest(data: dict) -> None:
         raise ValueError("required_local_checks must contain the exact acceptance set")
     external = data.get("external_prerequisites", [])
     _validate_ids(external, "external prerequisite")
+    if len(set(external)) != len(external):
+        raise ValueError("duplicate external prerequisite")
     components = data.get("components")
     if not isinstance(components, list) or not components or len(components) > 128:
         raise ValueError("components must be a bounded non-empty list")
+    if any(not isinstance(c, dict) for c in components):
+        raise ValueError("component entries must be objects")
     ids = [c.get("id") for c in components]
     _validate_ids(ids, "component")
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate component id")
+    if set(ids) & set(external):
+        raise ValueError("component/external prerequisite id collision")
     prs = [c.get("pr") for c in components]
     if any(type(p) is not int or p < 1 or p > 1000000 for p in prs) or len(set(prs)) != len(prs):
         raise ValueError("invalid or duplicate PR number")
     known = set(ids) | set(external)
+    component_ids = set(ids)
     graph: dict[str, list[str]] = {}
     for component in components:
         deps = component.get("depends_on", [])
@@ -43,13 +52,14 @@ def validate_manifest(data: dict) -> None:
             raise ValueError("duplicate/self dependency")
         if any(dep not in known for dep in deps):
             raise ValueError("unknown dependency")
-        graph[component["id"]] = [d for d in deps if d in set(ids)]
+        graph[component["id"]] = [d for d in deps if d in component_ids]
     _toposort(graph)
 
 
 def integration_order(data: dict) -> list[str]:
     validate_manifest(data)
-    graph = {c["id"]: [d for d in c.get("depends_on", []) if d in {x["id"] for x in data["components"]}] for c in data["components"]}
+    component_ids = {x["id"] for x in data["components"]}
+    graph = {c["id"]: [d for d in c.get("depends_on", []) if d in component_ids] for c in data["components"]}
     return _toposort(graph)
 
 
