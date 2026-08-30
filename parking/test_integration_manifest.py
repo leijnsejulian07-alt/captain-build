@@ -43,6 +43,21 @@ class IntegrationManifestTests(unittest.TestCase):
         data["components"][0]["id"] = "../escape"
         with self.assertRaises(ValueError): validate_manifest(data)
 
+    def test_non_object_component_fails_closed(self):
+        data = copy.deepcopy(BASE)
+        data["components"][0] = "agent-skills"
+        with self.assertRaises(ValueError): validate_manifest(data)
+
+    def test_duplicate_external_prerequisite_fails_closed(self):
+        data = copy.deepcopy(BASE)
+        data["external_prerequisites"].append(data["external_prerequisites"][0])
+        with self.assertRaises(ValueError): validate_manifest(data)
+
+    def test_component_external_id_collision_fails_closed(self):
+        data = copy.deepcopy(BASE)
+        data["external_prerequisites"].append(data["components"][0]["id"])
+        with self.assertRaises(ValueError): validate_manifest(data)
+
 
 if __name__ == "__main__":
     unittest.main()
