@@ -1,6 +1,6 @@
 """Fail-closed artifact contract for Captain's builder subsystem."""
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import re
 
@@ -63,15 +63,14 @@ def transition(artifact: BuilderArtifact, new_state: str) -> BuilderArtifact:
                "verified": {"committed", "rolled_back", "rejected"}}
     if artifact.state in _TERMINAL or new_state not in allowed.get(artifact.state, set()):
         raise ValueError("invalid artifact transition")
-    return BuilderArtifact(**{**artifact.__dict__, "state": new_state})
+    return replace(artifact, state=new_state)
 
 
 def next_revision(previous: BuilderArtifact, *, revision: int, content: bytes) -> BuilderArtifact:
     if previous.state in _TERMINAL:
         raise ValueError("terminal artifact cannot be revised")
-    if isinstance(revision, bool) or revision <= previous.revision:
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision <= previous.revision:
         raise ValueError("revision must increase")
-    return create_artifact(artifact_id=previous.artifact_id, chat_id=previous.chat_id,
-        project_id=previous.project_id, repo_scope="hash:" + previous.repo_scope_hash,
-        builder_session_id=previous.builder_session_id, kind=previous.kind,
-        revision=revision, content=content)
+    if not isinstance(content, bytes) or len(content) > 2_000_000:
+        raise ValueError("artifact content invalid or too large")
+    return replace(previous, revision=revision, content_sha256=sha256(content).hexdigest(), state="staged")
