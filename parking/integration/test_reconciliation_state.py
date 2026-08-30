@@ -16,6 +16,18 @@ class ReconciliationStateTests(unittest.TestCase):
         self.assertEqual(state["components"]["scoped-jobs"]["state"], "integrated")
         self.assertEqual(state["components"]["scoped-jobs"]["verified_base_sha"], self.sha)
 
+    def test_integrated_requires_same_verified_evidence(self):
+        state = transition(self.empty, "scoped-jobs", "verified", self.passed)
+        changed = dict(self.passed, router="passed")
+        changed["unit"] = "passed"
+        changed["doctor"] = "passed"
+        changed["project_isolation"] = "passed"
+        changed["repo_isolation"] = "passed"
+        self.assertEqual(changed, self.passed)
+        state["components"]["scoped-jobs"]["checks"] = dict(self.passed, router="failed")
+        with self.assertRaises(ValueError):
+            transition(state, "scoped-jobs", "integrated", self.passed)
+
     def test_verified_requires_exact_passing_checks(self):
         with self.assertRaises(ValueError):
             transition(self.empty, "scoped-jobs", "verified", {"unit": "passed"})
