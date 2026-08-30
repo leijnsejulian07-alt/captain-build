@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -8,12 +9,13 @@ ALLOWED_STATES = {"pending", "verified", "integrated", "rejected"}
 REQUIRED_CHECKS = {"unit", "doctor", "router", "project_isolation", "repo_isolation"}
 COMPONENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def load_state(path: str | Path) -> dict:
     p = Path(path)
     if not p.exists():
-        return {"schema_version": 2, "local_base_sha": None, "components": {}}
+        return {"schema_version": 3, "local_base_sha": None, "components": {}}
     data = json.loads(p.read_text(encoding="utf-8"))
     validate_state(data)
     return data
@@ -33,9 +35,15 @@ def _validate_sha(value: object, *, allow_none: bool = False) -> None:
         raise ValueError("invalid git sha")
 
 
+def _evidence_digest(component_id: str, base_sha: str, checks: dict) -> str:
+    payload = {"component_id": component_id, "local_base_sha": base_sha, "checks": checks}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def validate_state(data: dict) -> None:
     required = {"schema_version", "local_base_sha", "components"}
-    if not isinstance(data, dict) or set(data) != required or data.get("schema_version") != 2:
+    if not isinstance(data, dict) or set(data) != required or data.get("schema_version") != 3:
         raise ValueError("invalid reconciliation state")
     _validate_sha(data.get("local_base_sha"), allow_none=True)
     components = data.get("components")
@@ -47,7 +55,7 @@ def validate_state(data: dict) -> None:
         state = row.get("state")
         if state not in ALLOWED_STATES:
             raise ValueError("invalid component lifecycle state")
-        allowed_keys = {"state", "checks", "verified_base_sha"} if state in {"verified", "integrated"} else {"state"}
+        allowed_keys = {"state", "checks", "verified_base_sha", "evidence_digest"} if state in {"verified", "integrated"} else {"state"}
         if set(row) != allowed_keys:
             raise ValueError("unexpected component state fields")
         if state in {"verified", "integrated"}:
@@ -55,6 +63,12 @@ def validate_state(data: dict) -> None:
             _validate_sha(row.get("verified_base_sha"))
             if row["verified_base_sha"] != data["local_base_sha"]:
                 raise ValueError("component verification is stale for local base")
+            digest = row.get("evidence_digest")
+            if not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest):
+                raise ValueError("invalid acceptance evidence digest")
+            expected = _evidence_digest(component_id, row["verified_base_sha"], row["checks"])
+            if digest != expected:
+                raise ValueError("acceptance evidence was modified")
 
 
 def set_local_base(data: dict, local_base_sha: str) -> dict:
@@ -92,6 +106,7 @@ def transition(data: dict, component_id: str, new_state: str, checks: dict | Non
     if checks is not None:
         row["checks"] = dict(checks)
         row["verified_base_sha"] = data["local_base_sha"]
+        row["evidence_digest"] = _evidence_digest(component_id, data["local_base_sha"], row["checks"])
     next_data["components"][component_id] = row
     validate_state(next_data)
     return next_data
