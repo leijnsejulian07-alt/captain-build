@@ -47,10 +47,24 @@ class ReconciliationPlanTests(unittest.TestCase):
         self.assertEqual(actions["scoped-jobs"], "skip")
 
     def test_unknown_component_state_fails_closed(self):
-        with self.assertRaises(ValueError): build_reconciliation_plan(MANIFEST, {"not-real": "verified"}, OPEN, set())
+        with self.assertRaises(ValueError):
+            build_reconciliation_plan(MANIFEST, {"not-real": "verified"}, OPEN, set())
 
     def test_unknown_external_ready_fails_closed(self):
-        with self.assertRaises(ValueError): build_reconciliation_plan(MANIFEST, {}, OPEN, {"not-real"})
+        with self.assertRaises(ValueError):
+            build_reconciliation_plan(MANIFEST, {}, OPEN, {"not-real"})
+
+    def test_missing_pr_state_fails_closed(self):
+        prs = dict(OPEN)
+        prs.pop(next(iter(prs)))
+        with self.assertRaises(ValueError):
+            build_reconciliation_plan(MANIFEST, {}, prs, set())
+
+    def test_extra_pr_state_fails_closed(self):
+        prs = dict(OPEN)
+        prs[999999] = "open"
+        with self.assertRaises(ValueError):
+            build_reconciliation_plan(MANIFEST, {}, prs, set())
 
 
 if __name__ == "__main__":
