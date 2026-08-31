@@ -1,13 +1,17 @@
+import copy
 import unittest
 
 from source_snapshot import assert_snapshot_unchanged, source_snapshot_digest, validate_observed_sources
 
 
 MANIFEST = {
+    "schema_version": 1,
+    "required_local_checks": ["unit", "doctor", "router", "project_isolation", "repo_isolation"],
+    "external_prerequisites": [],
     "components": [
         {"id": "agent-skills", "pr": 1, "depends_on": []},
         {"id": "scoped-jobs", "pr": 2, "depends_on": []},
-    ]
+    ],
 }
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -81,6 +85,22 @@ class SourceSnapshotTests(unittest.TestCase):
         rows = observed()
         with self.assertRaises(ValueError):
             assert_snapshot_unchanged(MANIFEST, rows, rows, "0" * 64)
+
+    def test_dependency_graph_change_invalidates_snapshot(self):
+        rows = observed()
+        digest = source_snapshot_digest(MANIFEST, rows)
+        changed = copy.deepcopy(MANIFEST)
+        changed["components"][1]["depends_on"] = ["agent-skills"]
+        self.assertNotEqual(digest, source_snapshot_digest(changed, rows))
+        with self.assertRaises(ValueError):
+            assert_snapshot_unchanged(changed, rows, rows, digest)
+
+    def test_acceptance_or_external_prerequisite_change_invalidates_snapshot(self):
+        rows = observed()
+        digest = source_snapshot_digest(MANIFEST, rows)
+        changed = copy.deepcopy(MANIFEST)
+        changed["external_prerequisites"] = ["openbuilder-local"]
+        self.assertNotEqual(digest, source_snapshot_digest(changed, rows))
 
 
 if __name__ == "__main__":
