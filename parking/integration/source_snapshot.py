@@ -7,6 +7,8 @@ from typing import Any
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 COMPONENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 ALLOWED_PR_STATES = {"open", "closed"}
 MAX_COMPONENTS = 128
 
@@ -17,9 +19,24 @@ def _sha(value: Any) -> str:
     return value
 
 
+def _repository(value: Any) -> str:
+    if not isinstance(value, str) or not REPO_RE.fullmatch(value) or ".." in value:
+        raise ValueError("invalid repository identity")
+    return value
+
+
+def _ref(value: Any) -> str:
+    if not isinstance(value, str) or not REF_RE.fullmatch(value):
+        raise ValueError("invalid git ref")
+    if ".." in value or "//" in value or value.endswith("/") or value.startswith("/"):
+        raise ValueError("unsafe git ref")
+    return value
+
+
 def validate_observed_sources(manifest: dict, observed: dict) -> dict:
     if not isinstance(manifest, dict) or not isinstance(observed, dict):
         raise ValueError("manifest and observed sources must be objects")
+    source_repository = _repository(manifest.get("source_repository"))
     components = manifest.get("components")
     if not isinstance(components, list) or len(components) > MAX_COMPONENTS:
         raise ValueError("invalid manifest components")
@@ -40,17 +57,24 @@ def validate_observed_sources(manifest: dict, observed: dict) -> dict:
         raise ValueError("observed source set must exactly match manifest components")
 
     normalized: dict[str, dict] = {}
+    required_fields = {"pr", "state", "repository", "head_ref", "base_ref", "head_sha", "base_sha"}
     for component_id, expected_pr in expected.items():
         row = observed[component_id]
-        if not isinstance(row, dict) or set(row) != {"pr", "state", "head_sha", "base_sha"}:
+        if not isinstance(row, dict) or set(row) != required_fields:
             raise ValueError("invalid observed source record")
         if row["pr"] != expected_pr:
             raise ValueError("observed PR does not match manifest")
         if row["state"] not in ALLOWED_PR_STATES:
             raise ValueError("invalid PR state")
+        repository = _repository(row["repository"])
+        if repository != source_repository:
+            raise ValueError("parked PR repository does not match canonical Captain repository")
         normalized[component_id] = {
             "pr": expected_pr,
             "state": row["state"],
+            "repository": repository,
+            "head_ref": _ref(row["head_ref"]),
+            "base_ref": _ref(row["base_ref"]),
             "head_sha": _sha(row["head_sha"]),
             "base_sha": _sha(row["base_sha"]),
         }
@@ -72,6 +96,7 @@ def _manifest_binding(manifest: dict) -> dict:
         bound_components.append({"id": row.get("id"), "pr": row.get("pr"), "depends_on": sorted(deps)})
     return {
         "schema_version": manifest.get("schema_version"),
+        "source_repository": _repository(manifest.get("source_repository")),
         "required_local_checks": sorted(manifest.get("required_local_checks", [])),
         "external_prerequisites": sorted(manifest.get("external_prerequisites", [])),
         "components": sorted(bound_components, key=lambda row: str(row["id"])),
@@ -80,7 +105,7 @@ def _manifest_binding(manifest: dict) -> dict:
 
 def source_snapshot_digest(manifest: dict, observed: dict) -> str:
     normalized = validate_observed_sources(manifest, observed)
-    payload = {"schema_version": 2, "manifest": _manifest_binding(manifest), "sources": normalized}
+    payload = {"schema_version": 3, "manifest": _manifest_binding(manifest), "sources": normalized}
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
