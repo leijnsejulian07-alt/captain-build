@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "generated_on": "2026-08-30",
+  "source_repository": "leijnsejulian07-alt/captain-build",
   "required_local_checks": ["unit", "doctor", "router", "project_isolation", "repo_isolation"],
   "external_prerequisites": ["local-openbuilder-bridge", "research-project-state-bridge"],
   "components": [
