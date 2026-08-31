@@ -17,6 +17,18 @@ class ScopeContractTests(unittest.TestCase):
             "project_id": "project-alpha",
             "repo_scope": "leijnsejulian07-alt/example#refs/heads/main",
         }
+        self.epoch = 7
+
+    def _bind(self, kind, resource_id):
+        return bind_resource(self.scope, state_epoch=self.epoch, resource_kind=kind, resource_id=resource_id)
+
+    def _validate(self, binding, kind):
+        return validate_resource_binding(
+            binding,
+            self.scope,
+            expected_state_epoch=self.epoch,
+            resource_kind=kind,
+        )
 
     def test_exact_scope_matches(self):
         parsed = assert_same_scope(self.scope, dict(self.scope))
@@ -43,33 +55,65 @@ class ScopeContractTests(unittest.TestCase):
             parse_scope(unsafe)
 
     def test_resource_binding_round_trip(self):
-        binding = bind_resource(self.scope, resource_kind="preview_session", resource_id="preview-1")
-        validated = validate_resource_binding(binding, self.scope, resource_kind="preview_session")
-        self.assertEqual(validated, binding)
+        binding = self._bind("preview_session", "preview-1")
+        self.assertEqual(self._validate(binding, "preview_session"), binding)
 
     def test_cross_project_resource_reuse_is_rejected(self):
-        binding = bind_resource(self.scope, resource_kind="builder_session", resource_id="builder-1")
+        binding = self._bind("builder_session", "builder-1")
         other_scope = dict(self.scope, project_id="project-beta")
         with self.assertRaises(PermissionError):
-            validate_resource_binding(binding, other_scope, resource_kind="builder_session")
+            validate_resource_binding(
+                binding,
+                other_scope,
+                expected_state_epoch=self.epoch,
+                resource_kind="builder_session",
+            )
+
+    def test_stale_resource_after_project_state_reset_is_rejected(self):
+        binding = self._bind("builder_session", "builder-1")
+        with self.assertRaises(PermissionError):
+            validate_resource_binding(
+                binding,
+                self.scope,
+                expected_state_epoch=self.epoch + 1,
+                resource_kind="builder_session",
+            )
+
+    def test_epoch_tampering_is_rejected_by_digest(self):
+        binding = self._bind("task", "task-1")
+        tampered = copy.deepcopy(binding)
+        tampered["state_epoch"] = self.epoch + 1
+        with self.assertRaises(ValueError):
+            validate_resource_binding(
+                tampered,
+                self.scope,
+                expected_state_epoch=self.epoch + 1,
+                resource_kind="task",
+            )
+
+    def test_invalid_epochs_fail_closed(self):
+        for value in (0, -1, True, 2**63):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    bind_resource(self.scope, state_epoch=value, resource_kind="file", resource_id="file-1")
 
     def test_resource_kind_confusion_is_rejected(self):
-        binding = bind_resource(self.scope, resource_kind="memory", resource_id="memory-1")
+        binding = self._bind("memory", "memory-1")
         with self.assertRaises(PermissionError):
-            validate_resource_binding(binding, self.scope, resource_kind="task")
+            self._validate(binding, "task")
 
     def test_tampering_is_rejected(self):
-        binding = bind_resource(self.scope, resource_kind="task", resource_id="task-1")
+        binding = self._bind("task", "task-1")
         tampered = copy.deepcopy(binding)
         tampered["resource_id"] = "task-2"
         with self.assertRaises(ValueError):
-            validate_resource_binding(tampered, self.scope, resource_kind="task")
+            self._validate(tampered, "task")
 
     def test_binding_rejects_unknown_fields(self):
-        binding = bind_resource(self.scope, resource_kind="file", resource_id="file-1")
+        binding = self._bind("file", "file-1")
         binding["extra"] = "ignored-by-old-code"
         with self.assertRaises(ValueError):
-            validate_resource_binding(binding, self.scope, resource_kind="file")
+            self._validate(binding, "file")
 
 
 if __name__ == "__main__":
