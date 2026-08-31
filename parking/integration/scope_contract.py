@@ -12,7 +12,7 @@ _RESOURCE_KIND_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _RESOURCE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
 _OPERATION_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MAX_STATE_EPOCH = 2**63 - 1
 MAX_RESOURCE_GENERATION = 2**63 - 1
 MAX_ALLOWED_OPERATIONS = 16
@@ -41,7 +41,7 @@ def _validate_scope_id(name: str, value: object) -> str:
 def _validate_repo_scope(value: object) -> str:
     if not isinstance(value, str) or len(value) > 256 or not _REPO_SCOPE_RE.fullmatch(value):
         raise ValueError("invalid repo_scope")
-    if ".." in value or value.startswith(("/", "\\")) or "\\" in value:
+    if ".." in value or value.startswith("/") or chr(92) in value:
         raise ValueError("unsafe repo_scope")
     return value
 
@@ -56,6 +56,10 @@ def _validate_resource_generation(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > MAX_RESOURCE_GENERATION:
         raise ValueError("invalid resource_generation")
     return value
+
+
+def _validate_principal_id(value: object) -> str:
+    return _validate_scope_id("principal_id", value)
 
 
 def _validate_operation(value: object) -> str:
@@ -105,6 +109,7 @@ def assert_same_scope(expected: Mapping[str, object] | ScopeKey, actual: Mapping
 
 def _binding_digest(
     scope: ScopeKey,
+    principal_id: str,
     resource_kind: str,
     resource_id: str,
     state_epoch: int,
@@ -114,6 +119,7 @@ def _binding_digest(
     payload = {
         "schema_version": SCHEMA_VERSION,
         "scope": scope.as_dict(),
+        "principal_id": principal_id,
         "state_epoch": state_epoch,
         "resource_generation": resource_generation,
         "resource_kind": resource_kind,
@@ -127,6 +133,7 @@ def _binding_digest(
 def bind_resource(
     scope: Mapping[str, object] | ScopeKey,
     *,
+    principal_id: str,
     state_epoch: int,
     resource_generation: int,
     resource_kind: str,
@@ -134,6 +141,7 @@ def bind_resource(
     allowed_operations: Sequence[str],
 ) -> dict[str, object]:
     parsed = parse_scope(scope)
+    principal = _validate_principal_id(principal_id)
     epoch = _validate_state_epoch(state_epoch)
     generation = _validate_resource_generation(resource_generation)
     operations = _validate_allowed_operations(allowed_operations)
@@ -144,12 +152,13 @@ def bind_resource(
     return {
         "schema_version": SCHEMA_VERSION,
         "scope": parsed.as_dict(),
+        "principal_id": principal,
         "state_epoch": epoch,
         "resource_generation": generation,
         "resource_kind": resource_kind,
         "resource_id": resource_id,
         "allowed_operations": list(operations),
-        "binding_digest": _binding_digest(parsed, resource_kind, resource_id, epoch, generation, operations),
+        "binding_digest": _binding_digest(parsed, principal, resource_kind, resource_id, epoch, generation, operations),
     }
 
 
@@ -157,6 +166,7 @@ def validate_resource_binding(
     binding: Mapping[str, object],
     expected_scope: Mapping[str, object] | ScopeKey,
     *,
+    expected_principal_id: str,
     expected_state_epoch: int,
     expected_resource_generation: int,
     requested_operation: str,
@@ -165,6 +175,7 @@ def validate_resource_binding(
     required = {
         "schema_version",
         "scope",
+        "principal_id",
         "state_epoch",
         "resource_generation",
         "resource_kind",
@@ -176,6 +187,10 @@ def validate_resource_binding(
         raise ValueError("invalid resource scope binding")
 
     actual_scope = assert_same_scope(expected_scope, binding.get("scope"))
+    expected_principal = _validate_principal_id(expected_principal_id)
+    actual_principal = _validate_principal_id(binding.get("principal_id"))
+    if actual_principal != expected_principal:
+        raise PermissionError("resource principal mismatch")
     expected_epoch = _validate_state_epoch(expected_state_epoch)
     actual_epoch = _validate_state_epoch(binding.get("state_epoch"))
     if actual_epoch != expected_epoch:
@@ -198,7 +213,15 @@ def validate_resource_binding(
         raise ValueError("invalid resource_id")
     if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
         raise ValueError("invalid binding digest")
-    if digest != _binding_digest(actual_scope, kind, resource_id, actual_epoch, actual_generation, operations):
+    if digest != _binding_digest(
+        actual_scope,
+        actual_principal,
+        kind,
+        resource_id,
+        actual_epoch,
+        actual_generation,
+        operations,
+    ):
         raise ValueError("resource scope binding was modified")
     if operation not in operations:
         raise PermissionError("resource operation is not allowed")
