@@ -1,6 +1,6 @@
 import unittest
 
-from reconciliation_state import set_local_base, transition, validate_state
+from reconciliation_state import reject_expired_verification, set_local_base, transition, validate_state
 
 
 class ReconciliationStateTests(unittest.TestCase):
@@ -29,10 +29,36 @@ class ReconciliationStateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_state(state, now=self.t31)
 
+    def test_expired_verification_can_only_be_retired_to_rejected(self):
+        state = transition(self.empty, "scoped-jobs", "verified", self.passed, now=self.t0)
+        retired = reject_expired_verification(state, "scoped-jobs", now=self.t31)
+        self.assertEqual(retired["components"]["scoped-jobs"], {"state": "rejected"})
+        validate_state(retired, now=self.t31)
+        with self.assertRaises(ValueError):
+            transition(retired, "scoped-jobs", "verified", self.passed, now=self.t31)
+
+    def test_fresh_verification_cannot_use_expiry_recovery(self):
+        state = transition(self.empty, "scoped-jobs", "verified", self.passed, now=self.t0)
+        with self.assertRaises(ValueError):
+            reject_expired_verification(state, "scoped-jobs", now=self.t20)
+
+    def test_expiry_recovery_still_rejects_tampering(self):
+        state = transition(self.empty, "scoped-jobs", "verified", self.passed, now=self.t0)
+        state["components"]["scoped-jobs"]["evidence_digest"] = "0" * 64
+        with self.assertRaises(ValueError):
+            reject_expired_verification(state, "scoped-jobs", now=self.t31)
+
+    def test_expiry_recovery_rejects_future_evidence(self):
+        state = transition(self.empty, "scoped-jobs", "verified", self.passed, now=self.t0)
+        with self.assertRaises(ValueError):
+            reject_expired_verification(state, "scoped-jobs", now="2026-08-31T11:58:00Z")
+
     def test_integrated_audit_evidence_does_not_expire(self):
         state = transition(self.empty, "scoped-jobs", "verified", self.passed, now=self.t0)
         state = transition(state, "scoped-jobs", "integrated", self.passed, now=self.t20)
         validate_state(state, now="2027-08-31T12:20:00Z")
+        with self.assertRaises(ValueError):
+            reject_expired_verification(state, "scoped-jobs", now="2027-08-31T12:20:00Z")
 
     def test_future_verified_timestamp_fails_closed(self):
         state = transition(self.empty, "scoped-jobs", "verified", self.passed, now=self.t0)
@@ -76,6 +102,8 @@ class ReconciliationStateTests(unittest.TestCase):
         state["local_base_sha"] = self.other_sha
         with self.assertRaises(ValueError):
             validate_state(state, now=self.t20)
+        with self.assertRaises(ValueError):
+            reject_expired_verification(state, "scoped-jobs", now=self.t31)
 
     def test_local_base_can_only_change_before_verification(self):
         state = set_local_base({"schema_version": 4, "local_base_sha": None, "components": {}}, self.sha)
