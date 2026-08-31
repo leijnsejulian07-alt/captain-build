@@ -75,12 +75,11 @@ def _validate_verification_freshness(verified_at: str, now_dt: datetime) -> None
         raise ValueError("acceptance evidence is expired")
 
 
-def validate_state(data: dict, *, now: str | None = None) -> None:
+def _validate_state(data: dict, *, now_dt: datetime, require_verified_freshness: bool) -> None:
     required = {"schema_version", "local_base_sha", "components"}
     if not isinstance(data, dict) or set(data) != required or data.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("invalid reconciliation state")
     _validate_sha(data.get("local_base_sha"), allow_none=True)
-    now_dt = datetime.now(timezone.utc) if now is None else _parse_time(now)
     components = data.get("components")
     if not isinstance(components, dict) or len(components) > 128:
         raise ValueError("invalid component state map")
@@ -100,7 +99,7 @@ def validate_state(data: dict, *, now: str | None = None) -> None:
                 raise ValueError("component verification is stale for local base")
             verified_at = row.get("verified_at")
             _parse_time(verified_at)
-            if state == "verified":
+            if state == "verified" and require_verified_freshness:
                 _validate_verification_freshness(verified_at, now_dt)
             digest = row.get("evidence_digest")
             if not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest):
@@ -108,6 +107,11 @@ def validate_state(data: dict, *, now: str | None = None) -> None:
             expected = _evidence_digest(component_id, row["verified_base_sha"], row["checks"], verified_at)
             if digest != expected:
                 raise ValueError("acceptance evidence was modified")
+
+
+def validate_state(data: dict, *, now: str | None = None) -> None:
+    now_dt = datetime.now(timezone.utc) if now is None else _parse_time(now)
+    _validate_state(data, now_dt=now_dt, require_verified_freshness=True)
 
 
 def set_local_base(data: dict, local_base_sha: str) -> dict:
@@ -118,6 +122,32 @@ def set_local_base(data: dict, local_base_sha: str) -> dict:
     next_data = json.loads(json.dumps(data))
     next_data["local_base_sha"] = local_base_sha
     validate_state(next_data)
+    return next_data
+
+
+def reject_expired_verification(data: dict, component_id: str, *, now: str | None = None) -> dict:
+    """Safely retire expired verified evidence without making stale evidence promotable.
+
+    Normal validation deliberately rejects expired verified rows. This narrow recovery
+    path still validates every structural/base/digest invariant, then permits exactly
+    one terminal transition: expired verified -> rejected. Fresh, future-dated,
+    tampered, integrated, pending, or already rejected rows cannot use this path.
+    """
+    now_dt = datetime.now(timezone.utc) if now is None else _parse_time(now)
+    _validate_state(data, now_dt=now_dt, require_verified_freshness=False)
+    if not isinstance(component_id, str) or not COMPONENT_ID_RE.fullmatch(component_id):
+        raise ValueError("invalid component id")
+    row = data["components"].get(component_id)
+    if not isinstance(row, dict) or row.get("state") != "verified":
+        raise ValueError("only verified evidence can expire")
+    verified_dt = _parse_time(row["verified_at"])
+    if verified_dt > now_dt + MAX_FUTURE_SKEW:
+        raise ValueError("acceptance evidence timestamp is in the future")
+    if now_dt - verified_dt <= MAX_VERIFICATION_AGE:
+        raise ValueError("acceptance evidence is still fresh")
+    next_data = json.loads(json.dumps(data))
+    next_data["components"][component_id] = {"state": "rejected"}
+    validate_state(next_data, now=_iso(now_dt))
     return next_data
 
 
