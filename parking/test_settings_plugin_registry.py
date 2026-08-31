@@ -64,6 +64,33 @@ class RegistryTests(unittest.TestCase):
         rows = build_registry([b, a])
         self.assertEqual([r["id"] for r in rows], ["zeta", "alpha"])
 
+    def test_diagnostics_drive_safe_remediation(self):
+        self.assertEqual(good(connected=False).next_action, "connect")
+        self.assertEqual(good(verified_setup_version=1).next_action, "update-setup")
+        self.assertEqual(good(health="degraded").next_action, "test-connection")
+        self.assertIsNone(good().next_action)
+
+    def test_remediation_priority_is_deterministic(self):
+        p = good(enabled=False, connected=False, verified_setup_version=1, health="degraded")
+        self.assertEqual(p.next_action, "enable")
+        self.assertEqual(
+            p.diagnostics(),
+            ("disabled", "connect-required", "setup-verification-required", "health-degraded"),
+        )
+
+    def test_health_and_verified_setup_values_fail_closed(self):
+        with self.assertRaises(ValueError):
+            good(health="garbage").validate()
+        for bad in (True, 0, -1, 2**31):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                good(verified_setup_version=bad).validate()
+
+    def test_test_connection_is_explicit_for_key_id_or_local_auth(self):
+        self.assertFalse(good().public_state()["test_connection_available"])
+        self.assertTrue(good(auth_method="api-key").public_state()["test_connection_available"])
+        self.assertTrue(good(auth_method="id").public_state()["test_connection_available"])
+        self.assertTrue(good(auth_method="local").public_state()["test_connection_available"])
+
 
 if __name__ == "__main__":
     unittest.main()
