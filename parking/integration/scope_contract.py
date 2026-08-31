@@ -4,16 +4,18 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Sequence
 
 _SCOPE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _REPO_SCOPE_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:#[A-Za-z0-9._/@:-]{1,160})?$")
 _RESOURCE_KIND_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _RESOURCE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
+_OPERATION_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_STATE_EPOCH = 2**63 - 1
 MAX_RESOURCE_GENERATION = 2**63 - 1
+MAX_ALLOWED_OPERATIONS = 16
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,25 @@ def _validate_resource_generation(value: object) -> int:
     return value
 
 
+def _validate_operation(value: object) -> str:
+    if not isinstance(value, str) or not _OPERATION_RE.fullmatch(value):
+        raise ValueError("invalid resource operation")
+    return value
+
+
+def _validate_allowed_operations(value: object) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError("allowed_operations must be a sequence")
+    if not value or len(value) > MAX_ALLOWED_OPERATIONS:
+        raise ValueError("invalid allowed_operations count")
+    operations = tuple(_validate_operation(item) for item in value)
+    if len(set(operations)) != len(operations):
+        raise ValueError("duplicate allowed operation")
+    if tuple(sorted(operations)) != operations:
+        raise ValueError("allowed_operations must be canonical")
+    return operations
+
+
 def parse_scope(value: Mapping[str, object] | ScopeKey) -> ScopeKey:
     if isinstance(value, ScopeKey):
         scope = value
@@ -88,6 +109,7 @@ def _binding_digest(
     resource_id: str,
     state_epoch: int,
     resource_generation: int,
+    allowed_operations: tuple[str, ...],
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -96,6 +118,7 @@ def _binding_digest(
         "resource_generation": resource_generation,
         "resource_kind": resource_kind,
         "resource_id": resource_id,
+        "allowed_operations": list(allowed_operations),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -108,10 +131,12 @@ def bind_resource(
     resource_generation: int,
     resource_kind: str,
     resource_id: str,
+    allowed_operations: Sequence[str],
 ) -> dict[str, object]:
     parsed = parse_scope(scope)
     epoch = _validate_state_epoch(state_epoch)
     generation = _validate_resource_generation(resource_generation)
+    operations = _validate_allowed_operations(allowed_operations)
     if not isinstance(resource_kind, str) or not _RESOURCE_KIND_RE.fullmatch(resource_kind):
         raise ValueError("invalid resource_kind")
     if not isinstance(resource_id, str) or not _RESOURCE_ID_RE.fullmatch(resource_id):
@@ -123,7 +148,8 @@ def bind_resource(
         "resource_generation": generation,
         "resource_kind": resource_kind,
         "resource_id": resource_id,
-        "binding_digest": _binding_digest(parsed, resource_kind, resource_id, epoch, generation),
+        "allowed_operations": list(operations),
+        "binding_digest": _binding_digest(parsed, resource_kind, resource_id, epoch, generation, operations),
     }
 
 
@@ -133,6 +159,7 @@ def validate_resource_binding(
     *,
     expected_state_epoch: int,
     expected_resource_generation: int,
+    requested_operation: str,
     resource_kind: str | None = None,
 ) -> dict[str, object]:
     required = {
@@ -142,6 +169,7 @@ def validate_resource_binding(
         "resource_generation",
         "resource_kind",
         "resource_id",
+        "allowed_operations",
         "binding_digest",
     }
     if not isinstance(binding, Mapping) or set(binding) != required or binding.get("schema_version") != SCHEMA_VERSION:
@@ -159,6 +187,8 @@ def validate_resource_binding(
 
     kind = binding.get("resource_kind")
     resource_id = binding.get("resource_id")
+    operations = _validate_allowed_operations(binding.get("allowed_operations"))
+    operation = _validate_operation(requested_operation)
     digest = binding.get("binding_digest")
     if not isinstance(kind, str) or not _RESOURCE_KIND_RE.fullmatch(kind):
         raise ValueError("invalid resource_kind")
@@ -168,6 +198,8 @@ def validate_resource_binding(
         raise ValueError("invalid resource_id")
     if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
         raise ValueError("invalid binding digest")
-    if digest != _binding_digest(actual_scope, kind, resource_id, actual_epoch, actual_generation):
+    if digest != _binding_digest(actual_scope, kind, resource_id, actual_epoch, actual_generation, operations):
         raise ValueError("resource scope binding was modified")
+    if operation not in operations:
+        raise PermissionError("resource operation is not allowed")
     return dict(binding)
