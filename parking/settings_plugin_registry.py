@@ -7,6 +7,8 @@ import re
 _ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _KINDS = {"connector", "skill", "builder", "research", "browser", "memory", "eval", "tool"}
 _AUTH = {"none", "oauth", "api-key", "id", "local"}
+_HEALTH = {"unknown", "ok", "healthy", "degraded", "error", "expired", "auth-expired", "setup-required", "unavailable"}
+_MAX_SETUP_VERSION = 2**31 - 1
 
 @dataclass(frozen=True)
 class PluginManifest:
@@ -31,8 +33,16 @@ class PluginManifest:
             raise ValueError("invalid name")
         if self.kind not in _KINDS or self.auth_method not in _AUTH:
             raise ValueError("unsupported manifest kind/auth")
-        if self.setup_version < 1 or isinstance(self.setup_version, bool):
+        if isinstance(self.setup_version, bool) or not isinstance(self.setup_version, int) or not 1 <= self.setup_version <= _MAX_SETUP_VERSION:
             raise ValueError("invalid setup_version")
+        if self.verified_setup_version is not None and (
+            isinstance(self.verified_setup_version, bool)
+            or not isinstance(self.verified_setup_version, int)
+            or not 1 <= self.verified_setup_version <= _MAX_SETUP_VERSION
+        ):
+            raise ValueError("invalid verified_setup_version")
+        if self.health not in _HEALTH:
+            raise ValueError("invalid health")
         if self.connected and not self.installed:
             raise ValueError("connected plugin must be installed")
         if self.enabled and not self.installed:
@@ -46,6 +56,37 @@ class PluginManifest:
                 raise ValueError("invalid permission")
         if not req <= perms:
             raise ValueError("required permission missing from declared permissions")
+
+    def diagnostics(self) -> tuple[str, ...]:
+        self.validate()
+        issues: list[str] = []
+        if not self.installed:
+            issues.append("not-installed")
+        if self.installed and not self.enabled:
+            issues.append("disabled")
+        auth_required = self.auth_method in {"oauth", "api-key", "id"}
+        if self.installed and auth_required and not self.connected:
+            issues.append("connect-required")
+        if self.installed and self.verified_setup_version != self.setup_version:
+            issues.append("setup-verification-required")
+        if self.installed and self.health not in {"ok", "healthy"}:
+            issues.append(f"health-{self.health}")
+        return tuple(issues)
+
+    @property
+    def next_action(self) -> str | None:
+        issues = self.diagnostics()
+        if "not-installed" in issues:
+            return "install"
+        if "disabled" in issues:
+            return "enable"
+        if "connect-required" in issues:
+            return "connect"
+        if "setup-verification-required" in issues:
+            return "update-setup"
+        if any(issue.startswith("health-") for issue in issues):
+            return "test-connection"
+        return None
 
     @property
     def ready(self) -> bool:
@@ -72,6 +113,9 @@ class PluginManifest:
             "setup_version": self.setup_version,
             "verified_setup_version": self.verified_setup_version,
             "health": self.health,
+            "issues": list(self.diagnostics()),
+            "next_action": self.next_action,
+            "test_connection_available": self.auth_method in {"api-key", "id", "local"},
             "settings_anchor": f"plugin-{self.plugin_id}",
         }
 
