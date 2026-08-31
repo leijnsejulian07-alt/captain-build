@@ -70,10 +70,15 @@ def build_reconciliation_plan_from_state(
     pr_state: dict,
     external_ready: set[str],
 ) -> list[dict]:
+    validate_manifest(manifest)
     validate_state(reconciliation_state)
     local_base_sha = reconciliation_state.get("local_base_sha")
     if not isinstance(local_base_sha, str) or not SHA_RE.fullmatch(local_base_sha):
         raise ValueError("current local base sha must be captured before reconciliation planning")
+    manifest_components = {c["id"] for c in manifest["components"]}
+    persisted_components = set(reconciliation_state["components"])
+    if persisted_components != manifest_components:
+        raise ValueError("canonical reconciliation state must exactly match manifest components")
     return build_reconciliation_plan(
         manifest,
         component_lifecycle_view(reconciliation_state),
