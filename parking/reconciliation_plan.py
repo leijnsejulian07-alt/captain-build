@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
+
 from integration.reconciliation_state import validate_state
 from integration_manifest import integration_order, validate_manifest
 
 ALLOWED_COMPONENT_STATES = {"pending", "verified", "integrated", "rejected"}
 ALLOWED_PR_STATES = {"open", "closed", "merged"}
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def component_lifecycle_view(reconciliation_state: dict) -> dict[str, str]:
@@ -67,6 +70,10 @@ def build_reconciliation_plan_from_state(
     pr_state: dict,
     external_ready: set[str],
 ) -> list[dict]:
+    validate_state(reconciliation_state)
+    local_base_sha = reconciliation_state.get("local_base_sha")
+    if not isinstance(local_base_sha, str) or not SHA_RE.fullmatch(local_base_sha):
+        raise ValueError("current local base sha must be captured before reconciliation planning")
     return build_reconciliation_plan(
         manifest,
         component_lifecycle_view(reconciliation_state),
