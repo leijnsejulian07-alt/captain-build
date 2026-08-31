@@ -57,9 +57,30 @@ def validate_observed_sources(manifest: dict, observed: dict) -> dict:
     return normalized
 
 
+def _manifest_binding(manifest: dict) -> dict:
+    """Return the planning-critical manifest subset bound into source evidence."""
+    components = manifest.get("components")
+    if not isinstance(components, list):
+        raise ValueError("invalid manifest components")
+    bound_components = []
+    for row in components:
+        if not isinstance(row, dict):
+            raise ValueError("invalid component record")
+        deps = row.get("depends_on", [])
+        if not isinstance(deps, list):
+            raise ValueError("invalid component dependencies")
+        bound_components.append({"id": row.get("id"), "pr": row.get("pr"), "depends_on": sorted(deps)})
+    return {
+        "schema_version": manifest.get("schema_version"),
+        "required_local_checks": sorted(manifest.get("required_local_checks", [])),
+        "external_prerequisites": sorted(manifest.get("external_prerequisites", [])),
+        "components": sorted(bound_components, key=lambda row: str(row["id"])),
+    }
+
+
 def source_snapshot_digest(manifest: dict, observed: dict) -> str:
     normalized = validate_observed_sources(manifest, observed)
-    payload = {"schema_version": 1, "sources": normalized}
+    payload = {"schema_version": 2, "manifest": _manifest_binding(manifest), "sources": normalized}
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -70,8 +91,8 @@ def assert_snapshot_unchanged(manifest: dict, planned: dict, current: dict, expe
     planned_digest = source_snapshot_digest(manifest, planned)
     current_digest = source_snapshot_digest(manifest, current)
     if planned_digest != expected_digest:
-        raise ValueError("planned source snapshot evidence was modified")
+        raise ValueError("planned source snapshot evidence or manifest was modified")
     if current_digest != expected_digest:
-        raise ValueError("parked source PRs changed after reconciliation planning")
+        raise ValueError("parked source PRs or manifest changed after reconciliation planning")
     if any(row["state"] != "open" for row in current.values()):
         raise ValueError("all parked source PRs must remain open until local verification")
