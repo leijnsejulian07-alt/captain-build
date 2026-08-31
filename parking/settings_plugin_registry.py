@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Mapping
 import re
+import time
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _KINDS = {"connector", "skill", "builder", "research", "browser", "memory", "eval", "tool"}
 _AUTH = {"none", "oauth", "api-key", "id", "local"}
 _HEALTH = {"unknown", "ok", "healthy", "degraded", "error", "expired", "auth-expired", "setup-required", "unavailable"}
 _MAX_SETUP_VERSION = 2**31 - 1
+_MAX_DISMISS_SECONDS = 7 * 24 * 60 * 60
+_PERSISTENT_ACTIONS = {"connect", "update-setup", "test-connection"}
 
 @dataclass(frozen=True)
 class PluginManifest:
@@ -130,3 +133,50 @@ def build_registry(manifests: Iterable[PluginManifest]) -> list[dict]:
         seen.add(manifest.plugin_id)
         out.append(manifest.public_state())
     return sorted(out, key=lambda x: (x["kind"], x["name"].lower(), x["id"]))
+
+
+def build_launch_notices(
+    manifests: Iterable[PluginManifest],
+    dismissed_until: Mapping[str, int] | None = None,
+    *,
+    now: int | None = None,
+) -> list[dict]:
+    """Return secret-free launch notices derived only from canonical Settings state."""
+    now = int(time.time()) if now is None else now
+    if isinstance(now, bool) or not isinstance(now, int) or now < 0:
+        raise ValueError("invalid now")
+    dismissed_until = {} if dismissed_until is None else dict(dismissed_until)
+    notices: list[dict] = []
+    seen: set[str] = set()
+
+    for plugin in manifests:
+        plugin.validate()
+        if plugin.plugin_id in seen:
+            raise ValueError("duplicate plugin_id")
+        seen.add(plugin.plugin_id)
+        action = plugin.next_action
+
+        # Disabled/uninstalled optional plugins are not launch warnings. Important
+        # unresolved setup/auth/health problems are persistent while enabled.
+        if not plugin.installed or not plugin.enabled or action not in _PERSISTENT_ACTIONS:
+            continue
+
+        until = dismissed_until.get(plugin.plugin_id)
+        if until is not None:
+            if isinstance(until, bool) or not isinstance(until, int) or until < 0:
+                raise ValueError("invalid dismissal timestamp")
+            if until > now + _MAX_DISMISS_SECONDS:
+                raise ValueError("dismissal exceeds maximum reminder interval")
+            if until > now:
+                continue
+
+        notices.append({
+            "id": f"plugin-setup-{plugin.plugin_id}",
+            "plugin_id": plugin.plugin_id,
+            "severity": "warning",
+            "persistent": True,
+            "reason": plugin.diagnostics()[0],
+            "action": action,
+            "settings_anchor": f"plugin-{plugin.plugin_id}",
+        })
+    return sorted(notices, key=lambda x: x["plugin_id"])
