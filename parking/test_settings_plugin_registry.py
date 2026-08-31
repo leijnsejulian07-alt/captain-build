@@ -1,6 +1,6 @@
 import unittest
 
-from settings_plugin_registry import PluginManifest, build_registry
+from settings_plugin_registry import PluginManifest, build_registry, build_launch_notices
 
 
 def good(**overrides):
@@ -90,6 +90,32 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue(good(auth_method="api-key").public_state()["test_connection_available"])
         self.assertTrue(good(auth_method="id").public_state()["test_connection_available"])
         self.assertTrue(good(auth_method="local").public_state()["test_connection_available"])
+
+    def test_launch_notice_for_enabled_unresolved_setup(self):
+        notices = build_launch_notices([good(connected=False)], now=1000)
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["action"], "connect")
+        self.assertEqual(notices[0]["settings_anchor"], "plugin-github")
+        self.assertNotIn("permissions", notices[0])
+
+    def test_launch_notice_clears_when_resolved_and_ignores_disabled_optional(self):
+        self.assertEqual(build_launch_notices([good()], now=1000), [])
+        self.assertEqual(build_launch_notices([good(enabled=False, connected=False)], now=1000), [])
+        self.assertEqual(build_launch_notices([good(installed=False, connected=False, enabled=False)], now=1000), [])
+
+    def test_dismissal_is_temporary_and_bounded(self):
+        p = good(connected=False)
+        self.assertEqual(build_launch_notices([p], {"github": 1100}, now=1000), [])
+        self.assertEqual(len(build_launch_notices([p], {"github": 999}, now=1000)), 1)
+        with self.assertRaises(ValueError):
+            build_launch_notices([p], {"github": 1000 + 7 * 24 * 60 * 60 + 1}, now=1000)
+
+    def test_launch_notices_fail_closed_on_duplicate_or_bad_dismissal(self):
+        with self.assertRaises(ValueError):
+            build_launch_notices([good(), good(name="Other")], now=1000)
+        for bad in (True, -1, "tomorrow"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                build_launch_notices([good(connected=False)], {"github": bad}, now=1000)
 
 
 if __name__ == "__main__":
