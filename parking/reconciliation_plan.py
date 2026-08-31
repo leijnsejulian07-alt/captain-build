@@ -15,6 +15,9 @@ def build_reconciliation_plan(manifest: dict, component_state: dict, pr_state: d
         raise ValueError("unknown component state")
     if any(v not in ALLOWED_COMPONENT_STATES for v in component_state.values()):
         raise ValueError("invalid component lifecycle state")
+    expected_prs = {c["pr"] for c in manifest["components"]}
+    if set(pr_state) != expected_prs:
+        raise ValueError("PR state set must exactly match manifest components")
     if any(type(k) is not int or v not in ALLOWED_PR_STATES for k, v in pr_state.items()):
         raise ValueError("invalid PR state")
     declared_external = set(manifest.get("external_prerequisites", []))
@@ -29,9 +32,9 @@ def build_reconciliation_plan(manifest: dict, component_state: dict, pr_state: d
         if state in {"integrated", "rejected"}:
             action = "skip"
         else:
-            pr = pr_state.get(c["pr"])
+            pr = pr_state[c["pr"]]
             if pr != "open":
-                blockers.append(f"pr:{c['pr']}:{pr or 'unknown'}")
+                blockers.append(f"pr:{c['pr']}:{pr}")
             for dep in c.get("depends_on", []):
                 if dep in declared_external:
                     if dep not in external_ready:
