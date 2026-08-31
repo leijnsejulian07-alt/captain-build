@@ -38,6 +38,9 @@ def source_snapshot() -> dict:
         c["id"]: {
             "pr": c["pr"],
             "state": "open",
+            "repository": MANIFEST["source_repository"],
+            "head_ref": f"parking/component-{c['pr']}",
+            "base_ref": "main",
             "head_sha": format(c["pr"], "040x")[-40:],
             "base_sha": "f" * 40,
         }
@@ -138,7 +141,8 @@ class ReconciliationPlanTests(unittest.TestCase):
         state = set_local_base(canonical_state(), BASE_SHA)
         planned = source_snapshot()
         digest = source_snapshot_digest(MANIFEST, planned)
-        plan = build_reconciliation_plan_from_snapshot(MANIFEST, state, planned, dict(planned), digest, set())
+        current = {k: dict(v) for k, v in planned.items()}
+        plan = build_reconciliation_plan_from_snapshot(MANIFEST, state, planned, current, digest, set())
         self.assertEqual(next_actionable(plan)["action"], "verify")
 
     def test_snapshot_bound_planner_rejects_head_drift(self):
