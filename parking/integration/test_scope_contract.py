@@ -18,15 +18,23 @@ class ScopeContractTests(unittest.TestCase):
             "repo_scope": "leijnsejulian07-alt/example#refs/heads/main",
         }
         self.epoch = 7
+        self.generation = 3
 
     def _bind(self, kind, resource_id):
-        return bind_resource(self.scope, state_epoch=self.epoch, resource_kind=kind, resource_id=resource_id)
+        return bind_resource(
+            self.scope,
+            state_epoch=self.epoch,
+            resource_generation=self.generation,
+            resource_kind=kind,
+            resource_id=resource_id,
+        )
 
     def _validate(self, binding, kind):
         return validate_resource_binding(
             binding,
             self.scope,
             expected_state_epoch=self.epoch,
+            expected_resource_generation=self.generation,
             resource_kind=kind,
         )
 
@@ -66,6 +74,7 @@ class ScopeContractTests(unittest.TestCase):
                 binding,
                 other_scope,
                 expected_state_epoch=self.epoch,
+                expected_resource_generation=self.generation,
                 resource_kind="builder_session",
             )
 
@@ -76,7 +85,32 @@ class ScopeContractTests(unittest.TestCase):
                 binding,
                 self.scope,
                 expected_state_epoch=self.epoch + 1,
+                expected_resource_generation=self.generation,
                 resource_kind="builder_session",
+            )
+
+    def test_same_epoch_reissued_resource_rejects_old_generation(self):
+        binding = self._bind("preview_session", "preview-1")
+        with self.assertRaises(PermissionError):
+            validate_resource_binding(
+                binding,
+                self.scope,
+                expected_state_epoch=self.epoch,
+                expected_resource_generation=self.generation + 1,
+                resource_kind="preview_session",
+            )
+
+    def test_generation_tampering_is_rejected_by_digest(self):
+        binding = self._bind("task", "task-1")
+        tampered = copy.deepcopy(binding)
+        tampered["resource_generation"] = self.generation + 1
+        with self.assertRaises(ValueError):
+            validate_resource_binding(
+                tampered,
+                self.scope,
+                expected_state_epoch=self.epoch,
+                expected_resource_generation=self.generation + 1,
+                resource_kind="task",
             )
 
     def test_epoch_tampering_is_rejected_by_digest(self):
@@ -88,14 +122,30 @@ class ScopeContractTests(unittest.TestCase):
                 tampered,
                 self.scope,
                 expected_state_epoch=self.epoch + 1,
+                expected_resource_generation=self.generation,
                 resource_kind="task",
             )
 
-    def test_invalid_epochs_fail_closed(self):
+    def test_invalid_epochs_and_generations_fail_closed(self):
         for value in (0, -1, True, 2**63):
-            with self.subTest(value=value):
+            with self.subTest(epoch=value):
                 with self.assertRaises(ValueError):
-                    bind_resource(self.scope, state_epoch=value, resource_kind="file", resource_id="file-1")
+                    bind_resource(
+                        self.scope,
+                        state_epoch=value,
+                        resource_generation=self.generation,
+                        resource_kind="file",
+                        resource_id="file-1",
+                    )
+            with self.subTest(generation=value):
+                with self.assertRaises(ValueError):
+                    bind_resource(
+                        self.scope,
+                        state_epoch=self.epoch,
+                        resource_generation=value,
+                        resource_kind="file",
+                        resource_id="file-1",
+                    )
 
     def test_resource_kind_confusion_is_rejected(self):
         binding = self._bind("memory", "memory-1")
