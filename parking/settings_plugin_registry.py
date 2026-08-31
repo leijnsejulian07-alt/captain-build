@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, Mapping
+import hashlib
 import re
 import time
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _KINDS = {"connector", "skill", "builder", "research", "browser", "memory", "eval", "tool"}
 _AUTH = {"none", "oauth", "api-key", "id", "local"}
 _HEALTH = {"unknown", "ok", "healthy", "degraded", "error", "expired", "auth-expired", "setup-required", "unavailable"}
@@ -135,9 +137,23 @@ def build_registry(manifests: Iterable[PluginManifest]) -> list[dict]:
     return sorted(out, key=lambda x: (x["kind"], x["name"].lower(), x["id"]))
 
 
+def _notice_state_id(plugin: PluginManifest, *, reason: str, action: str) -> str:
+    """Bind a dismissal to the exact safe connector problem it acknowledged."""
+    raw = "\x1f".join((
+        plugin.plugin_id,
+        reason,
+        action,
+        str(plugin.setup_version),
+        str(plugin.verified_setup_version or 0),
+        plugin.health,
+        "1" if plugin.connected else "0",
+    ))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def build_launch_notices(
     manifests: Iterable[PluginManifest],
-    dismissed_until: Mapping[str, int] | None = None,
+    dismissed_until: Mapping[str, Mapping[str, object]] | None = None,
     *,
     now: int | None = None,
 ) -> list[dict]:
@@ -161,13 +177,23 @@ def build_launch_notices(
         if not plugin.installed or not plugin.enabled or action not in _PERSISTENT_ACTIONS:
             continue
 
-        until = dismissed_until.get(plugin.plugin_id)
-        if until is not None:
+        reason = plugin.diagnostics()[0]
+        notice_state_id = _notice_state_id(plugin, reason=reason, action=action)
+        dismissal = dismissed_until.get(plugin.plugin_id)
+        if dismissal is not None:
+            if not isinstance(dismissal, Mapping) or set(dismissal) != {"until", "notice_state_id"}:
+                raise ValueError("invalid dismissal state")
+            until = dismissal["until"]
+            dismissed_state_id = dismissal["notice_state_id"]
             if isinstance(until, bool) or not isinstance(until, int) or until < 0:
                 raise ValueError("invalid dismissal timestamp")
+            if not isinstance(dismissed_state_id, str) or not _SHA256.fullmatch(dismissed_state_id):
+                raise ValueError("invalid dismissal notice_state_id")
             if until > now + _MAX_DISMISS_SECONDS:
                 raise ValueError("dismissal exceeds maximum reminder interval")
-            if until > now:
+            # A changed auth/setup/health problem is a new notice and must not inherit
+            # an earlier dismissal, even when the plugin_id is unchanged.
+            if dismissed_state_id == notice_state_id and until > now:
                 continue
 
         notices.append({
@@ -175,8 +201,9 @@ def build_launch_notices(
             "plugin_id": plugin.plugin_id,
             "severity": "warning",
             "persistent": True,
-            "reason": plugin.diagnostics()[0],
+            "reason": reason,
             "action": action,
+            "notice_state_id": notice_state_id,
             "settings_anchor": f"plugin-{plugin.plugin_id}",
         })
     return sorted(notices, key=lambda x: x["plugin_id"])
