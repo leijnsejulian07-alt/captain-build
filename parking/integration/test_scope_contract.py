@@ -17,12 +17,14 @@ class ScopeContractTests(unittest.TestCase):
             "project_id": "project-alpha",
             "repo_scope": "leijnsejulian07-alt/example#refs/heads/main",
         }
+        self.principal = "captain"
         self.epoch = 7
         self.generation = 3
 
-    def _bind(self, kind, resource_id, operations=("read",)):
+    def _bind(self, kind, resource_id, operations=("read",), principal=None):
         return bind_resource(
             self.scope,
+            principal_id=self.principal if principal is None else principal,
             state_epoch=self.epoch,
             resource_generation=self.generation,
             resource_kind=kind,
@@ -30,10 +32,11 @@ class ScopeContractTests(unittest.TestCase):
             allowed_operations=operations,
         )
 
-    def _validate(self, binding, kind, operation="read"):
+    def _validate(self, binding, kind, operation="read", principal=None):
         return validate_resource_binding(
             binding,
             self.scope,
+            expected_principal_id=self.principal if principal is None else principal,
             expected_state_epoch=self.epoch,
             expected_resource_generation=self.generation,
             resource_kind=kind,
@@ -72,11 +75,30 @@ class ScopeContractTests(unittest.TestCase):
             validate_resource_binding(
                 binding,
                 dict(self.scope, project_id="project-beta"),
+                expected_principal_id=self.principal,
                 expected_state_epoch=self.epoch,
                 expected_resource_generation=self.generation,
                 resource_kind="builder_session",
                 requested_operation="read",
             )
+
+    def test_cross_principal_resource_reuse_is_rejected(self):
+        binding = self._bind("file", "file-1", ("read",), principal="plugin-alpha")
+        with self.assertRaises(PermissionError):
+            self._validate(binding, "file", principal="plugin-beta")
+
+    def test_principal_tampering_is_rejected_by_digest(self):
+        binding = self._bind("memory", "memory-1", principal="plugin-alpha")
+        tampered = copy.deepcopy(binding)
+        tampered["principal_id"] = "plugin-beta"
+        with self.assertRaises(ValueError):
+            self._validate(tampered, "memory", principal="plugin-beta")
+
+    def test_principal_is_required_and_strictly_validated(self):
+        for principal in ("", "../plugin", "plugin/other", True):
+            with self.subTest(principal=principal):
+                with self.assertRaises(ValueError):
+                    self._bind("file", "file-1", principal=principal)
 
     def test_stale_resource_after_project_state_reset_is_rejected(self):
         binding = self._bind("builder_session", "builder-1")
@@ -84,6 +106,7 @@ class ScopeContractTests(unittest.TestCase):
             validate_resource_binding(
                 binding,
                 self.scope,
+                expected_principal_id=self.principal,
                 expected_state_epoch=self.epoch + 1,
                 expected_resource_generation=self.generation,
                 resource_kind="builder_session",
@@ -96,6 +119,7 @@ class ScopeContractTests(unittest.TestCase):
             validate_resource_binding(
                 binding,
                 self.scope,
+                expected_principal_id=self.principal,
                 expected_state_epoch=self.epoch,
                 expected_resource_generation=self.generation + 1,
                 resource_kind="preview_session",
@@ -110,6 +134,7 @@ class ScopeContractTests(unittest.TestCase):
             validate_resource_binding(
                 tampered,
                 self.scope,
+                expected_principal_id=self.principal,
                 expected_state_epoch=self.epoch,
                 expected_resource_generation=self.generation + 1,
                 resource_kind="task",
@@ -124,6 +149,7 @@ class ScopeContractTests(unittest.TestCase):
             validate_resource_binding(
                 tampered,
                 self.scope,
+                expected_principal_id=self.principal,
                 expected_state_epoch=self.epoch + 1,
                 expected_resource_generation=self.generation,
                 resource_kind="task",
@@ -134,10 +160,10 @@ class ScopeContractTests(unittest.TestCase):
         for value in (0, -1, True, 2**63):
             with self.subTest(epoch=value):
                 with self.assertRaises(ValueError):
-                    bind_resource(self.scope, state_epoch=value, resource_generation=self.generation, resource_kind="file", resource_id="file-1", allowed_operations=("read",))
+                    bind_resource(self.scope, principal_id=self.principal, state_epoch=value, resource_generation=self.generation, resource_kind="file", resource_id="file-1", allowed_operations=("read",))
             with self.subTest(generation=value):
                 with self.assertRaises(ValueError):
-                    bind_resource(self.scope, state_epoch=self.epoch, resource_generation=value, resource_kind="file", resource_id="file-1", allowed_operations=("read",))
+                    bind_resource(self.scope, principal_id=self.principal, state_epoch=self.epoch, resource_generation=value, resource_kind="file", resource_id="file-1", allowed_operations=("read",))
 
     def test_read_only_binding_denies_write(self):
         binding = self._bind("file", "file-1", ("read",))
