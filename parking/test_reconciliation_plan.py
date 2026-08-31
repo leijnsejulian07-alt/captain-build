@@ -3,8 +3,10 @@ import unittest
 from pathlib import Path
 
 from integration.reconciliation_state import set_local_base, transition
+from integration.source_snapshot import source_snapshot_digest
 from reconciliation_plan import (
     build_reconciliation_plan,
+    build_reconciliation_plan_from_snapshot,
     build_reconciliation_plan_from_state,
     component_lifecycle_view,
     next_actionable,
@@ -28,6 +30,18 @@ def canonical_state() -> dict:
         "schema_version": 3,
         "local_base_sha": None,
         "components": {c["id"]: {"state": "pending"} for c in MANIFEST["components"]},
+    }
+
+
+def source_snapshot() -> dict:
+    return {
+        c["id"]: {
+            "pr": c["pr"],
+            "state": "open",
+            "head_sha": format(c["pr"], "040x")[-40:],
+            "base_sha": "f" * 40,
+        }
+        for c in MANIFEST["components"]
     }
 
 
@@ -119,6 +133,31 @@ class ReconciliationPlanTests(unittest.TestCase):
         state["local_base_sha"] = "b" * 40
         with self.assertRaises(ValueError):
             build_reconciliation_plan_from_state(MANIFEST, state, OPEN, set())
+
+    def test_snapshot_bound_planner_accepts_unchanged_sources(self):
+        state = set_local_base(canonical_state(), BASE_SHA)
+        planned = source_snapshot()
+        digest = source_snapshot_digest(MANIFEST, planned)
+        plan = build_reconciliation_plan_from_snapshot(MANIFEST, state, planned, dict(planned), digest, set())
+        self.assertEqual(next_actionable(plan)["action"], "verify")
+
+    def test_snapshot_bound_planner_rejects_head_drift(self):
+        state = set_local_base(canonical_state(), BASE_SHA)
+        planned = source_snapshot()
+        current = {k: dict(v) for k, v in planned.items()}
+        current[next(iter(current))]["head_sha"] = "e" * 40
+        digest = source_snapshot_digest(MANIFEST, planned)
+        with self.assertRaisesRegex(ValueError, "changed after reconciliation planning"):
+            build_reconciliation_plan_from_snapshot(MANIFEST, state, planned, current, digest, set())
+
+    def test_snapshot_bound_planner_rejects_closed_source(self):
+        state = set_local_base(canonical_state(), BASE_SHA)
+        planned = source_snapshot()
+        current = {k: dict(v) for k, v in planned.items()}
+        current[next(iter(current))]["state"] = "closed"
+        digest = source_snapshot_digest(MANIFEST, planned)
+        with self.assertRaises(ValueError):
+            build_reconciliation_plan_from_snapshot(MANIFEST, state, planned, current, digest, set())
 
 
 if __name__ == "__main__":
