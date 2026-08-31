@@ -96,6 +96,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         self.assertEqual(notices[0]["action"], "connect")
         self.assertEqual(notices[0]["settings_anchor"], "plugin-github")
+        self.assertEqual(len(notices[0]["notice_state_id"]), 64)
         self.assertNotIn("permissions", notices[0])
 
     def test_launch_notice_clears_when_resolved_and_ignores_disabled_optional(self):
@@ -105,17 +106,53 @@ class RegistryTests(unittest.TestCase):
 
     def test_dismissal_is_temporary_and_bounded(self):
         p = good(connected=False)
-        self.assertEqual(build_launch_notices([p], {"github": 1100}, now=1000), [])
-        self.assertEqual(len(build_launch_notices([p], {"github": 999}, now=1000)), 1)
+        notice = build_launch_notices([p], now=1000)[0]
+        dismissal = {"github": {"until": 1100, "notice_state_id": notice["notice_state_id"]}}
+        self.assertEqual(build_launch_notices([p], dismissal, now=1000), [])
+        dismissal["github"]["until"] = 999
+        self.assertEqual(len(build_launch_notices([p], dismissal, now=1000)), 1)
+        dismissal["github"]["until"] = 1000 + 7 * 24 * 60 * 60 + 1
         with self.assertRaises(ValueError):
-            build_launch_notices([p], {"github": 1000 + 7 * 24 * 60 * 60 + 1}, now=1000)
+            build_launch_notices([p], dismissal, now=1000)
+
+    def test_changed_problem_does_not_inherit_old_dismissal(self):
+        auth_problem = good(connected=False)
+        auth_notice = build_launch_notices([auth_problem], now=1000)[0]
+        dismissal = {"github": {"until": 1100, "notice_state_id": auth_notice["notice_state_id"]}}
+        self.assertEqual(build_launch_notices([auth_problem], dismissal, now=1000), [])
+
+        setup_problem = good(verified_setup_version=1)
+        notices = build_launch_notices([setup_problem], dismissal, now=1000)
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["action"], "update-setup")
+        self.assertNotEqual(notices[0]["notice_state_id"], auth_notice["notice_state_id"])
+
+    def test_same_action_but_changed_health_reappears(self):
+        degraded = good(health="degraded")
+        old_notice = build_launch_notices([degraded], now=1000)[0]
+        dismissal = {"github": {"until": 1100, "notice_state_id": old_notice["notice_state_id"]}}
+        expired = good(health="expired")
+        notices = build_launch_notices([expired], dismissal, now=1000)
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["action"], "test-connection")
+        self.assertNotEqual(notices[0]["notice_state_id"], old_notice["notice_state_id"])
 
     def test_launch_notices_fail_closed_on_duplicate_or_bad_dismissal(self):
         with self.assertRaises(ValueError):
             build_launch_notices([good(), good(name="Other")], now=1000)
-        for bad in (True, -1, "tomorrow"):
+        p = good(connected=False)
+        notice = build_launch_notices([p], now=1000)[0]
+        bad_states = (
+            True,
+            1100,
+            {"until": True, "notice_state_id": notice["notice_state_id"]},
+            {"until": -1, "notice_state_id": notice["notice_state_id"]},
+            {"until": 1100, "notice_state_id": "bad"},
+            {"until": 1100, "notice_state_id": notice["notice_state_id"], "extra": True},
+        )
+        for bad in bad_states:
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                build_launch_notices([good(connected=False)], {"github": bad}, now=1000)
+                build_launch_notices([p], {"github": bad}, now=1000)
 
 
 if __name__ == "__main__":
