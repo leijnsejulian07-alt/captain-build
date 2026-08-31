@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from integration.external_prerequisites import validate_external_prerequisites
 from integration.reconciliation_state import validate_state
 from integration.source_snapshot import assert_snapshot_unchanged, validate_observed_sources
 from integration_manifest import integration_order, validate_manifest
@@ -96,11 +97,11 @@ def build_reconciliation_plan_from_snapshot(
     source_digest: str,
     external_ready: set[str],
 ) -> list[dict]:
-    """Build an actionable plan only while the parked source PR snapshot is unchanged.
+    """Build a plan only while the parked source PR snapshot is unchanged.
 
-    This is the canonical reconnect entry point once live GitHub PR metadata has been
-    collected. Head/base drift, PR replacement, closure, or tampered snapshot evidence
-    fails closed before any verify/integrate action can be returned.
+    This compatibility entry point accepts a prevalidated ready set. New reconnect code
+    should use build_reconciliation_plan_from_evidence_snapshot so prerequisite evidence
+    is validated against the exact captured local base SHA inside the canonical path.
     """
     assert_snapshot_unchanged(manifest, planned_sources, current_sources, source_digest)
     normalized = validate_observed_sources(manifest, current_sources)
@@ -109,6 +110,34 @@ def build_reconciliation_plan_from_snapshot(
         manifest,
         reconciliation_state,
         pr_state,
+        external_ready,
+    )
+
+
+def build_reconciliation_plan_from_evidence_snapshot(
+    manifest: dict,
+    reconciliation_state: dict,
+    planned_sources: dict,
+    current_sources: dict,
+    source_digest: str,
+    external_evidence: dict,
+) -> list[dict]:
+    """Canonical fail-closed reconnect planner with bound prerequisite evidence."""
+    validate_state(reconciliation_state)
+    local_base_sha = reconciliation_state.get("local_base_sha")
+    if not isinstance(local_base_sha, str) or not SHA_RE.fullmatch(local_base_sha):
+        raise ValueError("current local base sha must be captured before reconciliation planning")
+    external_ready = validate_external_prerequisites(
+        manifest,
+        external_evidence,
+        local_base_sha,
+    )
+    return build_reconciliation_plan_from_snapshot(
+        manifest,
+        reconciliation_state,
+        planned_sources,
+        current_sources,
+        source_digest,
         external_ready,
     )
 
