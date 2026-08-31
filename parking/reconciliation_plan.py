@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from integration.reconciliation_state import validate_state
+from integration.source_snapshot import assert_snapshot_unchanged, validate_observed_sources
 from integration_manifest import integration_order, validate_manifest
 
 ALLOWED_COMPONENT_STATES = {"pending", "verified", "integrated", "rejected"}
@@ -82,6 +83,31 @@ def build_reconciliation_plan_from_state(
     return build_reconciliation_plan(
         manifest,
         component_lifecycle_view(reconciliation_state),
+        pr_state,
+        external_ready,
+    )
+
+
+def build_reconciliation_plan_from_snapshot(
+    manifest: dict,
+    reconciliation_state: dict,
+    planned_sources: dict,
+    current_sources: dict,
+    source_digest: str,
+    external_ready: set[str],
+) -> list[dict]:
+    """Build an actionable plan only while the parked source PR snapshot is unchanged.
+
+    This is the canonical reconnect entry point once live GitHub PR metadata has been
+    collected. Head/base drift, PR replacement, closure, or tampered snapshot evidence
+    fails closed before any verify/integrate action can be returned.
+    """
+    assert_snapshot_unchanged(manifest, planned_sources, current_sources, source_digest)
+    normalized = validate_observed_sources(manifest, current_sources)
+    pr_state = {row["pr"]: row["state"] for row in normalized.values()}
+    return build_reconciliation_plan_from_state(
+        manifest,
+        reconciliation_state,
         pr_state,
         external_ready,
     )
