@@ -58,6 +58,24 @@ class IntegrationManifestTests(unittest.TestCase):
         data["external_prerequisites"].append(data["components"][0]["id"])
         with self.assertRaises(ValueError): validate_manifest(data)
 
+    def test_source_repository_is_required_and_valid(self):
+        data = copy.deepcopy(BASE)
+        del data["source_repository"]
+        with self.assertRaises(ValueError): validate_manifest(data)
+        data = copy.deepcopy(BASE)
+        data["source_repository"] = "../escape"
+        with self.assertRaises(ValueError): validate_manifest(data)
+
+    def test_unknown_top_level_field_fails_closed(self):
+        data = copy.deepcopy(BASE)
+        data["unexpected"] = True
+        with self.assertRaises(ValueError): validate_manifest(data)
+
+    def test_unknown_component_field_fails_closed(self):
+        data = copy.deepcopy(BASE)
+        data["components"][0]["command"] = "echo unsafe"
+        with self.assertRaises(ValueError): validate_manifest(data)
+
 
 if __name__ == "__main__":
     unittest.main()
