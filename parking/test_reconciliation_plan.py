@@ -80,6 +80,11 @@ class ReconciliationPlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_reconciliation_plan(MANIFEST, {}, prs, set())
 
+    def test_canonical_state_requires_captured_local_base_before_planning(self):
+        state = {"schema_version": 3, "local_base_sha": None, "components": {}}
+        with self.assertRaisesRegex(ValueError, "local base sha"):
+            build_reconciliation_plan_from_state(MANIFEST, state, OPEN, set())
+
     def test_canonical_state_drives_planner_without_manual_translation(self):
         state = {"schema_version": 3, "local_base_sha": None, "components": {}}
         state = set_local_base(state, BASE_SHA)
