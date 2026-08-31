@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+from integration.reconciliation_state import validate_state
 from integration_manifest import integration_order, validate_manifest
 
 ALLOWED_COMPONENT_STATES = {"pending", "verified", "integrated", "rejected"}
 ALLOWED_PR_STATES = {"open", "closed", "merged"}
+
+
+def component_lifecycle_view(reconciliation_state: dict) -> dict[str, str]:
+    """Return the planner's minimal lifecycle view from canonical persisted state.
+
+    The canonical state is validated first, including acceptance evidence digests and
+    local-base binding. This prevents reconnect code from hand-translating or
+    accidentally bypassing the persisted fail-closed reconciliation contract.
+    """
+    validate_state(reconciliation_state)
+    return {
+        component_id: row["state"]
+        for component_id, row in reconciliation_state["components"].items()
+    }
 
 
 def build_reconciliation_plan(manifest: dict, component_state: dict, pr_state: dict, external_ready: set[str]) -> list[dict]:
@@ -44,6 +59,20 @@ def build_reconciliation_plan(manifest: dict, component_state: dict, pr_state: d
             action = "blocked" if blockers else ("verify" if state == "pending" else "integrate")
         plan.append({"id": component_id, "pr": c["pr"], "state": state, "action": action, "blockers": blockers})
     return plan
+
+
+def build_reconciliation_plan_from_state(
+    manifest: dict,
+    reconciliation_state: dict,
+    pr_state: dict,
+    external_ready: set[str],
+) -> list[dict]:
+    return build_reconciliation_plan(
+        manifest,
+        component_lifecycle_view(reconciliation_state),
+        pr_state,
+        external_ready,
+    )
 
 
 def next_actionable(plan: list[dict]) -> dict | None:
