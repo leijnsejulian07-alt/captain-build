@@ -27,6 +27,9 @@ def source_snapshot() -> dict:
         c["id"]: {
             "pr": c["pr"],
             "state": "open",
+            "repository": MANIFEST["source_repository"],
+            "head_ref": f"parking/component-{c['pr']}",
+            "base_ref": "main",
             "head_sha": format(c["pr"], "040x")[-40:],
             "base_sha": "f" * 40,
         }
@@ -41,7 +44,7 @@ class EvidenceBoundPlannerTests(unittest.TestCase):
             MANIFEST,
             canonical_state(),
             planned,
-            dict(planned),
+            {key: dict(value) for key, value in planned.items()},
             source_snapshot_digest(MANIFEST, planned),
             evidence,
         )
