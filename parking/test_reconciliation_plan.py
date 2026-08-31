@@ -23,6 +23,14 @@ CHECKS = {
 BASE_SHA = "a" * 40
 
 
+def canonical_state() -> dict:
+    return {
+        "schema_version": 3,
+        "local_base_sha": None,
+        "components": {c["id"]: {"state": "pending"} for c in MANIFEST["components"]},
+    }
+
+
 class ReconciliationPlanTests(unittest.TestCase):
     def test_root_component_is_actionable(self):
         plan = build_reconciliation_plan(MANIFEST, {}, OPEN, set())
@@ -81,29 +89,32 @@ class ReconciliationPlanTests(unittest.TestCase):
             build_reconciliation_plan(MANIFEST, {}, prs, set())
 
     def test_canonical_state_requires_captured_local_base_before_planning(self):
-        state = {"schema_version": 3, "local_base_sha": None, "components": {}}
+        state = canonical_state()
         with self.assertRaisesRegex(ValueError, "local base sha"):
             build_reconciliation_plan_from_state(MANIFEST, state, OPEN, set())
 
+    def test_canonical_state_must_exactly_match_manifest_components(self):
+        state = set_local_base(canonical_state(), BASE_SHA)
+        state["components"].pop(next(iter(state["components"])))
+        with self.assertRaisesRegex(ValueError, "exactly match manifest components"):
+            build_reconciliation_plan_from_state(MANIFEST, state, OPEN, set())
+
     def test_canonical_state_drives_planner_without_manual_translation(self):
-        state = {"schema_version": 3, "local_base_sha": None, "components": {}}
-        state = set_local_base(state, BASE_SHA)
+        state = set_local_base(canonical_state(), BASE_SHA)
         state = transition(state, "scoped-jobs", "verified", CHECKS)
         plan = build_reconciliation_plan_from_state(MANIFEST, state, OPEN, set())
         row = next(x for x in plan if x["id"] == "scoped-jobs")
         self.assertEqual(row["action"], "integrate")
 
     def test_tampered_canonical_evidence_fails_closed_before_planning(self):
-        state = {"schema_version": 3, "local_base_sha": None, "components": {}}
-        state = set_local_base(state, BASE_SHA)
+        state = set_local_base(canonical_state(), BASE_SHA)
         state = transition(state, "scoped-jobs", "verified", CHECKS)
         state["components"]["scoped-jobs"]["evidence_digest"] = "0" * 64
         with self.assertRaises(ValueError):
             component_lifecycle_view(state)
 
     def test_stale_canonical_base_fails_closed_before_planning(self):
-        state = {"schema_version": 3, "local_base_sha": None, "components": {}}
-        state = set_local_base(state, BASE_SHA)
+        state = set_local_base(canonical_state(), BASE_SHA)
         state = transition(state, "scoped-jobs", "verified", CHECKS)
         state["local_base_sha"] = "b" * 40
         with self.assertRaises(ValueError):
