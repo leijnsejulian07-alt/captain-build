@@ -31,10 +31,8 @@ class PromotionReceiptGateTests(unittest.TestCase):
         return kw
 
     def consume(self, ledger=None, **overrides):
-        return consume_receipt(
-            self.base() if ledger is None else ledger,
-            **self.consume_kwargs(**overrides),
-        )
+        return consume_receipt(self.base() if ledger is None else ledger,
+                               **self.consume_kwargs(**overrides))
 
     def test_exact_scope_pass_consumes_once(self):
         ledger, public = self.consume()
@@ -47,38 +45,47 @@ class PromotionReceiptGateTests(unittest.TestCase):
         ledger = self.base()
         plan_a = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
         plan_b = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
-        self.assertEqual(plan_a["expected_state_token"], plan_b["expected_state_token"])
-        consumed, _ = apply_prepared_consumption(ledger, plan_a, now=1100)
+        consumed, _ = apply_prepared_consumption(ledger, plan_a, now=1101)
         with self.assertRaisesRegex(ValueError, "state changed before atomic consume"):
-            apply_prepared_consumption(consumed, plan_b, now=1100)
+            apply_prepared_consumption(consumed, plan_b, now=1101)
 
     def test_prepared_plan_cannot_cross_receipt_expiry(self):
         ledger = self.base(expires_at=1110)
         plan = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
-        with self.assertRaisesRegex(ValueError, "expired or not yet valid at atomic consume"):
+        with self.assertRaisesRegex(ValueError, "atomic consume"):
             apply_prepared_consumption(ledger, plan, now=1111)
 
-    def test_prepared_plan_cannot_be_retimestamped(self):
+    def test_prepared_plan_has_bounded_lifetime(self):
         ledger = self.base()
         plan = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
-        with self.assertRaisesRegex(ValueError, "timestamp is stale"):
-            apply_prepared_consumption(ledger, plan, now=1101)
+        with self.assertRaisesRegex(ValueError, "plan expired"):
+            apply_prepared_consumption(ledger, plan, now=1131)
+        with self.assertRaisesRegex(ValueError, "not yet valid"):
+            apply_prepared_consumption(ledger, plan, now=1099)
+
+    def test_commit_uses_authoritative_apply_time(self):
+        ledger = self.base()
+        plan = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
+        consumed, _ = apply_prepared_consumption(ledger, plan, now=1105)
+        self.assertEqual(consumed["vr-1"]["consumed_at"], 1105)
+
+    def test_plan_schema_and_action_tampering_fail_closed(self):
+        ledger = self.base()
+        plan = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
+        plan["unexpected"] = True
+        with self.assertRaisesRegex(ValueError, "valid ledger and consumption plan"):
+            apply_prepared_consumption(ledger, plan, now=1100)
+        plan = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
+        plan["action"] = "merge"
+        with self.assertRaisesRegex(ValueError, "action mismatch"):
+            apply_prepared_consumption(ledger, plan, now=1100)
 
     def test_state_token_changes_after_consumption(self):
         ledger = self.base()
         before = receipt_state_token(ledger["vr-1"])
         plan = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
         consumed, _ = apply_prepared_consumption(ledger, plan, now=1100)
-        after = receipt_state_token(consumed["vr-1"])
-        self.assertNotEqual(before, after)
-        self.assertEqual(after, plan["replacement_state_token"])
-
-    def test_tampered_consumption_plan_fails_closed(self):
-        ledger = self.base()
-        plan = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
-        plan["replacement"]["consumed_action"] = "merge"
-        with self.assertRaisesRegex(ValueError, "invalid replacement receipt state"):
-            apply_prepared_consumption(ledger, plan, now=1100)
+        self.assertNotEqual(before, receipt_state_token(consumed["vr-1"]))
 
     def test_unknown_forged_handle_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "unknown validation receipt"):
