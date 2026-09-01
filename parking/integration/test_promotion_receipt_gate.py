@@ -1,6 +1,12 @@
 import unittest
 
-from promotion_receipt_gate import consume_receipt, issue_receipt
+from promotion_receipt_gate import (
+    apply_prepared_consumption,
+    consume_receipt,
+    issue_receipt,
+    prepare_receipt_consumption,
+    receipt_state_token,
+)
 
 
 class PromotionReceiptGateTests(unittest.TestCase):
@@ -15,14 +21,20 @@ class PromotionReceiptGateTests(unittest.TestCase):
         row = issue_receipt(**kw)
         return {row["receipt_id"]: row}
 
-    def consume(self, ledger=None, **overrides):
+    def consume_kwargs(self, **overrides):
         kw = dict(receipt_id="vr-1", action="promote", chat_id="chat-a",
                   project_id="project-a", repo_scope="C:/repo/a",
                   session_id="session-a", runtime_generation="epoch-a",
                   profile_id="default", current_worktree_fingerprint="tree-a",
                   now=1100)
         kw.update(overrides)
-        return consume_receipt(self.base() if ledger is None else ledger, **kw)
+        return kw
+
+    def consume(self, ledger=None, **overrides):
+        return consume_receipt(
+            self.base() if ledger is None else ledger,
+            **self.consume_kwargs(**overrides),
+        )
 
     def test_exact_scope_pass_consumes_once(self):
         ledger, public = self.consume()
@@ -30,6 +42,31 @@ class PromotionReceiptGateTests(unittest.TestCase):
         self.assertTrue(ledger["vr-1"]["consumed"])
         with self.assertRaisesRegex(ValueError, "already consumed"):
             self.consume(ledger=ledger)
+
+    def test_atomic_cas_prevents_concurrent_double_consume(self):
+        ledger = self.base()
+        plan_a = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1100))
+        plan_b = prepare_receipt_consumption(ledger, **self.consume_kwargs(now=1101))
+        self.assertEqual(plan_a["expected_state_token"], plan_b["expected_state_token"])
+        consumed, _ = apply_prepared_consumption(ledger, plan_a)
+        with self.assertRaisesRegex(ValueError, "state changed before atomic consume"):
+            apply_prepared_consumption(consumed, plan_b)
+
+    def test_state_token_changes_after_consumption(self):
+        ledger = self.base()
+        before = receipt_state_token(ledger["vr-1"])
+        plan = prepare_receipt_consumption(ledger, **self.consume_kwargs())
+        consumed, _ = apply_prepared_consumption(ledger, plan)
+        after = receipt_state_token(consumed["vr-1"])
+        self.assertNotEqual(before, after)
+        self.assertEqual(after, plan["replacement_state_token"])
+
+    def test_tampered_consumption_plan_fails_closed(self):
+        ledger = self.base()
+        plan = prepare_receipt_consumption(ledger, **self.consume_kwargs())
+        plan["replacement"]["consumed_action"] = "merge"
+        with self.assertRaisesRegex(ValueError, "invalid replacement receipt state"):
+            apply_prepared_consumption(ledger, plan)
 
     def test_unknown_forged_handle_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "unknown validation receipt"):
@@ -54,7 +91,7 @@ class PromotionReceiptGateTests(unittest.TestCase):
         ledger = self.base()
         ledger["vr-1"]["schema_version"] = 1
         ledger["vr-1"].pop("authorized_action")
-        with self.assertRaisesRegex(ValueError, "invalid validation receipt"):
+        with self.assertRaisesRegex(ValueError, "invalid validation receipt schema"):
             self.consume(ledger=ledger)
 
     def test_malformed_or_extended_receipt_schema_fails_closed(self):
