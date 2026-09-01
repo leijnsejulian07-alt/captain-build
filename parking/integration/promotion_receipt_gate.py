@@ -17,6 +17,13 @@ def _need_id(name, value):
     return value
 
 
+def _need_action(value):
+    value = str(value or "")
+    if value not in ACTIONS:
+        raise ValueError("unsupported promotion action")
+    return value
+
+
 def _scope_hash(chat_id, project_id, repo_scope):
     chat_id = _need_id("chat_id", chat_id)
     project_id = _need_id("project_id", project_id)
@@ -36,10 +43,11 @@ def _fingerprint(value):
 
 def issue_receipt(*, receipt_id, chat_id, project_id, repo_scope, session_id,
                   runtime_generation, profile_id, worktree_fingerprint,
-                  issued_at, expires_at, validation_status):
+                  issued_at, expires_at, validation_status, authorized_action):
     receipt_id = _need_id("receipt_id", receipt_id)
     session_id = _need_id("session_id", session_id)
     profile_id = _need_id("profile_id", profile_id)
+    authorized_action = _need_action(authorized_action)
     if validation_status != "pass":
         raise ValueError("only passing validation may issue a receipt")
     if not isinstance(issued_at, int) or isinstance(issued_at, bool):
@@ -49,7 +57,7 @@ def issue_receipt(*, receipt_id, chat_id, project_id, repo_scope, session_id,
     if expires_at <= issued_at or expires_at - issued_at > MAX_TTL_SECONDS:
         raise ValueError("receipt ttl invalid")
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "receipt_id": receipt_id,
         "kind": "validation-pass",
         "scope_hash": _scope_hash(chat_id, project_id, repo_scope),
@@ -57,6 +65,7 @@ def issue_receipt(*, receipt_id, chat_id, project_id, repo_scope, session_id,
         "runtime_generation_hash": _fingerprint(runtime_generation),
         "profile_id": profile_id,
         "worktree_fingerprint_hash": _fingerprint(worktree_fingerprint),
+        "authorized_action": authorized_action,
         "issued_at": issued_at,
         "expires_at": expires_at,
         "consumed": False,
@@ -71,21 +80,21 @@ def consume_receipt(ledger, *, receipt_id, action, chat_id, project_id, repo_sco
     if not isinstance(ledger, dict):
         raise ValueError("receipt ledger required")
     receipt_id = _need_id("receipt_id", receipt_id)
-    action = str(action or "")
-    if action not in ACTIONS:
-        raise ValueError("unsupported promotion action")
+    action = _need_action(action)
     if not isinstance(now, int) or isinstance(now, bool):
         raise ValueError("now must be int")
     stored = ledger.get(receipt_id)
     if not isinstance(stored, dict):
         raise ValueError("unknown validation receipt")
     row = deepcopy(stored)
-    if row.get("schema_version") != 1 or row.get("kind") != "validation-pass":
+    if row.get("schema_version") != 2 or row.get("kind") != "validation-pass":
         raise ValueError("invalid validation receipt")
     if row.get("receipt_id") != receipt_id:
         raise ValueError("receipt id mismatch")
     if row.get("consumed") is not False:
         raise ValueError("validation receipt already consumed")
+    if row.get("authorized_action") != action:
+        raise ValueError("validation receipt action mismatch")
     if row.get("scope_hash") != _scope_hash(chat_id, project_id, repo_scope):
         raise ValueError("validation receipt scope mismatch")
     if row.get("session_id") != _need_id("session_id", session_id):
