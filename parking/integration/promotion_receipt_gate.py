@@ -47,6 +47,20 @@ def _fingerprint(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _canonical_receipt_bytes(row):
+    if not isinstance(row, dict) or set(row) != RECEIPT_FIELDS:
+        raise ValueError("invalid validation receipt schema")
+    return json.dumps(
+        row, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def receipt_state_token(row):
+    """Opaque CAS token for the exact stored receipt row; contains no secrets."""
+    return hashlib.sha256(_canonical_receipt_bytes(row)).hexdigest()
+
+
 def issue_receipt(*, receipt_id, chat_id, project_id, repo_scope, session_id,
                   runtime_generation, profile_id, worktree_fingerprint,
                   issued_at, expires_at, validation_status, authorized_action):
@@ -80,9 +94,9 @@ def issue_receipt(*, receipt_id, chat_id, project_id, repo_scope, session_id,
     }
 
 
-def consume_receipt(ledger, *, receipt_id, action, chat_id, project_id, repo_scope,
-                    session_id, runtime_generation, profile_id,
-                    current_worktree_fingerprint, now):
+def _validated_consumption_row(ledger, *, receipt_id, action, chat_id, project_id,
+                               repo_scope, session_id, runtime_generation, profile_id,
+                               current_worktree_fingerprint, now):
     if not isinstance(ledger, dict):
         raise ValueError("receipt ledger required")
     receipt_id = _need_id("receipt_id", receipt_id)
@@ -93,8 +107,7 @@ def consume_receipt(ledger, *, receipt_id, action, chat_id, project_id, repo_sco
     if not isinstance(stored, dict):
         raise ValueError("unknown validation receipt")
     row = deepcopy(stored)
-    if set(row) != RECEIPT_FIELDS:
-        raise ValueError("invalid validation receipt schema")
+    _canonical_receipt_bytes(row)
     if row.get("schema_version") != 2 or row.get("kind") != "validation-pass":
         raise ValueError("invalid validation receipt")
     if row.get("receipt_id") != receipt_id:
@@ -122,9 +135,45 @@ def consume_receipt(ledger, *, receipt_id, action, chat_id, project_id, repo_sco
         raise ValueError("invalid receipt ttl")
     if now < issued_at or now > expires_at:
         raise ValueError("validation receipt expired or not yet valid")
+    return receipt_id, action, row
+
+
+def prepare_receipt_consumption(ledger, **kwargs):
+    """Prepare an atomic compare-and-swap mutation; this does not consume by itself."""
+    receipt_id, action, row = _validated_consumption_row(ledger, **kwargs)
+    expected_state_token = receipt_state_token(row)
     row["consumed"] = True
     row["consumed_action"] = action
-    row["consumed_at"] = now
+    row["consumed_at"] = kwargs["now"]
+    return {
+        "receipt_id": receipt_id,
+        "expected_state_token": expected_state_token,
+        "replacement": row,
+        "replacement_state_token": receipt_state_token(row),
+        "accepted": True,
+        "action": action,
+    }
+
+
+def apply_prepared_consumption(ledger, plan):
+    """In-memory CAS reference. Durable stores must perform the same CAS atomically."""
+    if not isinstance(ledger, dict) or not isinstance(plan, dict):
+        raise ValueError("ledger and consumption plan required")
+    receipt_id = _need_id("receipt_id", plan.get("receipt_id"))
+    expected = str(plan.get("expected_state_token") or "")
+    replacement = plan.get("replacement")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ValueError("valid expected receipt state token required")
+    current = ledger.get(receipt_id)
+    if not isinstance(current, dict) or receipt_state_token(current) != expected:
+        raise ValueError("receipt state changed before atomic consume")
+    if not isinstance(replacement, dict) or receipt_state_token(replacement) != plan.get("replacement_state_token"):
+        raise ValueError("invalid replacement receipt state")
     updated = dict(ledger)
-    updated[receipt_id] = row
-    return updated, {"receipt_id": receipt_id, "accepted": True, "action": action}
+    updated[receipt_id] = deepcopy(replacement)
+    return updated, {"receipt_id": receipt_id, "accepted": True, "action": replacement["consumed_action"]}
+
+
+def consume_receipt(ledger, **kwargs):
+    """Compatibility helper for single-process tests; production integration must use atomic CAS."""
+    return apply_prepared_consumption(ledger, prepare_receipt_consumption(ledger, **kwargs))
