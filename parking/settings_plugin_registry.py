@@ -29,6 +29,7 @@ class PluginManifest:
     version: str | None = None
     setup_version: int = 1
     verified_setup_version: int | None = None
+    verified_auth_method: str | None = None
     health: str = "unknown"
 
     def validate(self) -> None:
@@ -38,6 +39,8 @@ class PluginManifest:
             raise ValueError("invalid name")
         if self.kind not in _KINDS or self.auth_method not in _AUTH:
             raise ValueError("unsupported manifest kind/auth")
+        if self.verified_auth_method is not None and self.verified_auth_method not in _AUTH:
+            raise ValueError("invalid verified_auth_method")
         if isinstance(self.setup_version, bool) or not isinstance(self.setup_version, int) or not 1 <= self.setup_version <= _MAX_SETUP_VERSION:
             raise ValueError("invalid setup_version")
         if self.verified_setup_version is not None and (
@@ -52,6 +55,8 @@ class PluginManifest:
             raise ValueError("connected plugin must be installed")
         if self.enabled and not self.installed:
             raise ValueError("enabled plugin must be installed")
+        if not self.connected and self.verified_auth_method is not None and self.auth_method in {"oauth", "api-key", "id"}:
+            raise ValueError("disconnected remote plugin cannot retain verified auth")
         perms = set(self.permissions)
         req = set(self.required_permissions)
         if len(perms) != len(self.permissions) or len(req) != len(self.required_permissions):
@@ -72,6 +77,8 @@ class PluginManifest:
         auth_required = self.auth_method in {"oauth", "api-key", "id"}
         if self.installed and auth_required and not self.connected:
             issues.append("connect-required")
+        if self.installed and auth_required and self.connected and self.verified_auth_method != self.auth_method:
+            issues.append("auth-method-verification-required")
         if self.installed and self.verified_setup_version != self.setup_version:
             issues.append("setup-verification-required")
         if self.installed and self.health not in {"ok", "healthy"}:
@@ -85,7 +92,7 @@ class PluginManifest:
             return "install"
         if "disabled" in issues:
             return "enable"
-        if "connect-required" in issues:
+        if "connect-required" in issues or "auth-method-verification-required" in issues:
             return "connect"
         if "setup-verification-required" in issues:
             return "update-setup"
@@ -98,7 +105,10 @@ class PluginManifest:
         self.validate()
         healthy = self.health in {"ok", "healthy"}
         setup_ok = self.verified_setup_version == self.setup_version
-        auth_ok = self.auth_method in {"none", "local"} or self.connected
+        auth_ok = (
+            self.auth_method in {"none", "local"}
+            or (self.connected and self.verified_auth_method == self.auth_method)
+        )
         return self.installed and self.enabled and auth_ok and healthy and setup_ok
 
     def public_state(self) -> dict:
@@ -108,6 +118,7 @@ class PluginManifest:
             "name": self.name,
             "kind": self.kind,
             "auth_method": self.auth_method,
+            "verified_auth_method": self.verified_auth_method,
             "installed": self.installed,
             "connected": self.connected,
             "enabled": self.enabled,
@@ -143,6 +154,8 @@ def _notice_state_id(plugin: PluginManifest, *, reason: str, action: str) -> str
         plugin.plugin_id,
         reason,
         action,
+        plugin.auth_method,
+        plugin.verified_auth_method or "unverified",
         str(plugin.setup_version),
         str(plugin.verified_setup_version or 0),
         plugin.health,
@@ -172,8 +185,6 @@ def build_launch_notices(
         seen.add(plugin.plugin_id)
         action = plugin.next_action
 
-        # Disabled/uninstalled optional plugins are not launch warnings. Important
-        # unresolved setup/auth/health problems are persistent while enabled.
         if not plugin.installed or not plugin.enabled or action not in _PERSISTENT_ACTIONS:
             continue
 
@@ -191,8 +202,6 @@ def build_launch_notices(
                 raise ValueError("invalid dismissal notice_state_id")
             if until > now + _MAX_DISMISS_SECONDS:
                 raise ValueError("dismissal exceeds maximum reminder interval")
-            # A changed auth/setup/health problem is a new notice and must not inherit
-            # an earlier dismissal, even when the plugin_id is unchanged.
             if dismissed_state_id == notice_state_id and until > now:
                 continue
 
