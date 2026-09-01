@@ -14,6 +14,7 @@ def good(**overrides):
         enabled=True,
         permissions=("repo.read", "repo.write"),
         required_permissions=("repo.read",),
+        granted_permissions=("repo.read",),
         version="1.0",
         setup_version=2,
         verified_setup_version=2,
@@ -32,6 +33,7 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(good(health="expired").ready)
         self.assertFalse(good(verified_setup_version=1).ready)
         self.assertFalse(good(verified_auth_method="api-key").ready)
+        self.assertFalse(good(granted_permissions=()).ready)
 
     def test_connected_or_enabled_without_install_fails(self):
         with self.assertRaises(ValueError):
@@ -40,6 +42,16 @@ class RegistryTests(unittest.TestCase):
     def test_required_permission_must_be_declared(self):
         with self.assertRaises(ValueError):
             good(required_permissions=("admin",)).validate()
+
+    def test_granted_permission_must_be_declared(self):
+        with self.assertRaises(ValueError):
+            good(granted_permissions=("admin",)).validate()
+
+    def test_missing_required_grant_blocks_ready_and_routes_to_permissions(self):
+        p = good(granted_permissions=())
+        self.assertFalse(p.ready)
+        self.assertIn("permission-approval-required", p.diagnostics())
+        self.assertEqual(p.next_action, "review-permissions")
 
     def test_path_like_ids_fail_closed(self):
         for bad in ("../github", "git/hub", "github\\x", ""):
@@ -55,6 +67,7 @@ class RegistryTests(unittest.TestCase):
         forbidden = {"token", "api_key", "secret", "password", "authorization", "cookie"}
         self.assertFalse(forbidden & set(state))
         self.assertEqual(state["settings_anchor"], "plugin-github")
+        self.assertEqual(state["granted_permissions"], ["repo.read"])
 
     def test_local_plugin_does_not_require_connected(self):
         p = good(plugin_id="openbuilder", name="OpenBuilder", kind="builder", auth_method="local",
@@ -71,17 +84,18 @@ class RegistryTests(unittest.TestCase):
     def test_diagnostics_drive_safe_remediation(self):
         self.assertEqual(good(connected=False, verified_auth_method=None).next_action, "connect")
         self.assertEqual(good(verified_auth_method="api-key").next_action, "connect")
+        self.assertEqual(good(granted_permissions=()).next_action, "review-permissions")
         self.assertEqual(good(verified_setup_version=1).next_action, "update-setup")
         self.assertEqual(good(health="degraded").next_action, "test-connection")
         self.assertIsNone(good().next_action)
 
     def test_remediation_priority_is_deterministic(self):
         p = good(enabled=False, connected=False, verified_auth_method=None,
-                 verified_setup_version=1, health="degraded")
+                 granted_permissions=(), verified_setup_version=1, health="degraded")
         self.assertEqual(p.next_action, "enable")
         self.assertEqual(
             p.diagnostics(),
-            ("disabled", "connect-required", "setup-verification-required", "health-degraded"),
+            ("disabled", "connect-required", "permission-approval-required", "setup-verification-required", "health-degraded"),
         )
 
     def test_health_setup_and_verified_auth_values_fail_closed(self):
@@ -119,6 +133,22 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(notices[0]["settings_anchor"], "plugin-github")
         self.assertEqual(len(notices[0]["notice_state_id"]), 64)
         self.assertNotIn("permissions", notices[0])
+
+    def test_missing_permission_grant_produces_persistent_notice(self):
+        notices = build_launch_notices([good(granted_permissions=())], now=1000)
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["reason"], "permission-approval-required")
+        self.assertEqual(notices[0]["action"], "review-permissions")
+        self.assertNotIn("required_permissions", notices[0])
+
+    def test_permission_change_invalidates_old_dismissal(self):
+        old = good(granted_permissions=())
+        old_notice = build_launch_notices([old], now=1000)[0]
+        dismissal = {"github": {"until": 1100, "notice_state_id": old_notice["notice_state_id"]}}
+        changed = good(required_permissions=("repo.write",), granted_permissions=())
+        notices = build_launch_notices([changed], dismissal, now=1000)
+        self.assertEqual(len(notices), 1)
+        self.assertNotEqual(notices[0]["notice_state_id"], old_notice["notice_state_id"])
 
     def test_auth_migration_produces_persistent_connect_notice(self):
         notices = build_launch_notices([good(verified_auth_method="api-key")], now=1000)
