@@ -57,6 +57,26 @@ class PromotionReceiptGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid validation receipt"):
             self.consume(ledger=ledger)
 
+    def test_malformed_or_extended_receipt_schema_fails_closed(self):
+        ledger = self.base()
+        ledger["vr-1"]["unexpected"] = "do-not-ignore"
+        with self.assertRaisesRegex(ValueError, "invalid validation receipt schema"):
+            self.consume(ledger=ledger)
+        ledger = self.base()
+        ledger["vr-1"].pop("profile_id")
+        with self.assertRaisesRegex(ValueError, "invalid validation receipt schema"):
+            self.consume(ledger=ledger)
+
+    def test_inconsistent_unconsumed_state_fails_closed(self):
+        ledger = self.base()
+        ledger["vr-1"]["consumed_action"] = "promote"
+        with self.assertRaisesRegex(ValueError, "already consumed or malformed"):
+            self.consume(ledger=ledger)
+        ledger = self.base()
+        ledger["vr-1"]["consumed_at"] = 1099
+        with self.assertRaisesRegex(ValueError, "already consumed or malformed"):
+            self.consume(ledger=ledger)
+
     def test_worktree_mutation_invalidates_receipt(self):
         with self.assertRaisesRegex(ValueError, "worktree mismatch"):
             self.consume(current_worktree_fingerprint="tree-after-edit")
