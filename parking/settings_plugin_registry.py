@@ -13,7 +13,7 @@ _AUTH = {"none", "oauth", "api-key", "id", "local"}
 _HEALTH = {"unknown", "ok", "healthy", "degraded", "error", "expired", "auth-expired", "setup-required", "unavailable"}
 _MAX_SETUP_VERSION = 2**31 - 1
 _MAX_DISMISS_SECONDS = 7 * 24 * 60 * 60
-_PERSISTENT_ACTIONS = {"connect", "update-setup", "test-connection"}
+_PERSISTENT_ACTIONS = {"connect", "review-permissions", "update-setup", "test-connection"}
 
 @dataclass(frozen=True)
 class PluginManifest:
@@ -26,6 +26,7 @@ class PluginManifest:
     enabled: bool
     permissions: tuple[str, ...]
     required_permissions: tuple[str, ...]
+    granted_permissions: tuple[str, ...] = ()
     version: str | None = None
     setup_version: int = 1
     verified_setup_version: int | None = None
@@ -59,13 +60,16 @@ class PluginManifest:
             raise ValueError("disconnected remote plugin cannot retain verified auth")
         perms = set(self.permissions)
         req = set(self.required_permissions)
-        if len(perms) != len(self.permissions) or len(req) != len(self.required_permissions):
+        grants = set(self.granted_permissions)
+        if len(perms) != len(self.permissions) or len(req) != len(self.required_permissions) or len(grants) != len(self.granted_permissions):
             raise ValueError("duplicate permission")
-        for p in perms | req:
+        for p in perms | req | grants:
             if not _ID.fullmatch(p):
                 raise ValueError("invalid permission")
         if not req <= perms:
             raise ValueError("required permission missing from declared permissions")
+        if not grants <= perms:
+            raise ValueError("granted permission missing from declared permissions")
 
     def diagnostics(self) -> tuple[str, ...]:
         self.validate()
@@ -79,6 +83,8 @@ class PluginManifest:
             issues.append("connect-required")
         if self.installed and auth_required and self.connected and self.verified_auth_method != self.auth_method:
             issues.append("auth-method-verification-required")
+        if self.installed and not set(self.required_permissions) <= set(self.granted_permissions):
+            issues.append("permission-approval-required")
         if self.installed and self.verified_setup_version != self.setup_version:
             issues.append("setup-verification-required")
         if self.installed and self.health not in {"ok", "healthy"}:
@@ -94,6 +100,8 @@ class PluginManifest:
             return "enable"
         if "connect-required" in issues or "auth-method-verification-required" in issues:
             return "connect"
+        if "permission-approval-required" in issues:
+            return "review-permissions"
         if "setup-verification-required" in issues:
             return "update-setup"
         if any(issue.startswith("health-") for issue in issues):
@@ -105,11 +113,9 @@ class PluginManifest:
         self.validate()
         healthy = self.health in {"ok", "healthy"}
         setup_ok = self.verified_setup_version == self.setup_version
-        auth_ok = (
-            self.auth_method in {"none", "local"}
-            or (self.connected and self.verified_auth_method == self.auth_method)
-        )
-        return self.installed and self.enabled and auth_ok and healthy and setup_ok
+        auth_ok = self.auth_method in {"none", "local"} or (self.connected and self.verified_auth_method == self.auth_method)
+        permissions_ok = set(self.required_permissions) <= set(self.granted_permissions)
+        return self.installed and self.enabled and auth_ok and permissions_ok and healthy and setup_ok
 
     def public_state(self) -> dict:
         self.validate()
@@ -125,6 +131,7 @@ class PluginManifest:
             "ready": self.ready,
             "permissions": list(self.permissions),
             "required_permissions": list(self.required_permissions),
+            "granted_permissions": list(self.granted_permissions),
             "version": self.version,
             "setup_version": self.setup_version,
             "verified_setup_version": self.verified_setup_version,
@@ -148,6 +155,14 @@ def build_registry(manifests: Iterable[PluginManifest]) -> list[dict]:
     return sorted(out, key=lambda x: (x["kind"], x["name"].lower(), x["id"]))
 
 
+def _permission_state_digest(plugin: PluginManifest) -> str:
+    raw = "\x1e".join((
+        ",".join(sorted(plugin.required_permissions)),
+        ",".join(sorted(plugin.granted_permissions)),
+    ))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _notice_state_id(plugin: PluginManifest, *, reason: str, action: str) -> str:
     """Bind a dismissal to the exact safe connector problem it acknowledged."""
     raw = "\x1f".join((
@@ -160,6 +175,7 @@ def _notice_state_id(plugin: PluginManifest, *, reason: str, action: str) -> str
         str(plugin.verified_setup_version or 0),
         plugin.health,
         "1" if plugin.connected else "0",
+        _permission_state_digest(plugin),
     ))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -184,7 +200,6 @@ def build_launch_notices(
             raise ValueError("duplicate plugin_id")
         seen.add(plugin.plugin_id)
         action = plugin.next_action
-
         if not plugin.installed or not plugin.enabled or action not in _PERSISTENT_ACTIONS:
             continue
 
