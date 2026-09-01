@@ -82,6 +82,45 @@ class ConnectorHealthFreshnessTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             project_connector_health(base(), evidence(plugin_id="gitlab"), now=1100)
 
+    def test_older_but_still_fresh_evidence_is_rejected_as_replay(self):
+        out = project_connector_health(
+            base(),
+            evidence(checked_at=1000),
+            now=1100,
+            last_accepted_checked_at=1050,
+        )
+        self.assertFalse(out["ready"])
+        self.assertFalse(out["health_evidence_fresh"])
+        self.assertIn("health-check-replayed", out["issues"])
+        self.assertEqual(out["next_action"], "test-connection")
+
+    def test_equal_timestamp_is_idempotently_accepted(self):
+        out = project_connector_health(
+            base(),
+            evidence(checked_at=1000),
+            now=1100,
+            last_accepted_checked_at=1000,
+        )
+        self.assertTrue(out["ready"])
+        self.assertNotIn("health-check-replayed", out["issues"])
+
+    def test_newer_evidence_advances_monotonically(self):
+        out = project_connector_health(
+            base(),
+            evidence(checked_at=1050),
+            now=1100,
+            last_accepted_checked_at=1000,
+        )
+        self.assertTrue(out["ready"])
+        self.assertEqual(out["health_evidence_checked_at"], 1050)
+
+    def test_invalid_last_accepted_timestamp_fails_closed(self):
+        for bad in (True, -1, 2**63):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                project_connector_health(base(), evidence(), now=1100, last_accepted_checked_at=bad)
+        with self.assertRaises(ValueError):
+            project_connector_health(base(), evidence(), now=1100, last_accepted_checked_at=1200)
+
     def test_invalid_bounds_fail_closed(self):
         for bad_now in (True, -1):
             with self.subTest(bad_now=bad_now), self.assertRaises(ValueError):
