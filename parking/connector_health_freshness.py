@@ -40,17 +40,30 @@ def project_connector_health(
     *,
     now: int,
     max_age_seconds: int = _DEFAULT_MAX_AGE_SECONDS,
+    last_accepted_checked_at: int | None = None,
 ) -> dict:
-    """Fail closed when readiness depends on missing, stale, or mismatched health evidence.
+    """Fail closed when readiness depends on missing, stale, replayed, or mismatched evidence.
 
     This is a parking adapter: the live Settings registry remains the canonical source of
     manifest/auth/permission/setup state. The health monitor contributes only bounded,
     secret-free evidence and cannot make an otherwise-not-ready connector Ready.
+
+    ``last_accepted_checked_at`` is the newest health timestamp Captain has already
+    accepted for this connector/configuration. Older evidence is rejected as a replay,
+    even when it would still fall inside the normal freshness window. Equal timestamps
+    remain idempotent so deterministic re-projection is safe.
     """
     if isinstance(now, bool) or not isinstance(now, int) or not 0 <= now <= _MAX_TS:
         raise ValueError("invalid now")
     if isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, int) or not 1 <= max_age_seconds <= 7 * 24 * 60 * 60:
         raise ValueError("invalid max_age_seconds")
+    if last_accepted_checked_at is not None:
+        if isinstance(last_accepted_checked_at, bool) or not isinstance(last_accepted_checked_at, int):
+            raise ValueError("invalid last_accepted_checked_at")
+        if not 0 <= last_accepted_checked_at <= _MAX_TS:
+            raise ValueError("invalid last_accepted_checked_at")
+        if last_accepted_checked_at > now:
+            raise ValueError("last accepted health timestamp is from future")
 
     required = {"id", "kind", "auth_method", "setup_version", "health", "ready", "issues", "next_action"}
     if not required <= set(public_state):
@@ -84,6 +97,8 @@ def project_connector_health(
             health_issue = "health-check-setup-version-mismatch"
         elif evidence.checked_at > now:
             health_issue = "health-check-from-future"
+        elif last_accepted_checked_at is not None and evidence.checked_at < last_accepted_checked_at:
+            health_issue = "health-check-replayed"
         elif now - evidence.checked_at > max_age_seconds:
             health_issue = "health-check-stale"
         elif evidence.health not in _HEALTHY:
