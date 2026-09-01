@@ -8,6 +8,12 @@ from copy import deepcopy
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
 ACTIONS = {"approve", "promote", "merge"}
 MAX_TTL_SECONDS = 3600
+RECEIPT_FIELDS = {
+    "schema_version", "receipt_id", "kind", "scope_hash", "session_id",
+    "runtime_generation_hash", "profile_id", "worktree_fingerprint_hash",
+    "authorized_action", "issued_at", "expires_at", "consumed",
+    "consumed_action", "consumed_at",
+}
 
 
 def _need_id(name, value):
@@ -87,12 +93,14 @@ def consume_receipt(ledger, *, receipt_id, action, chat_id, project_id, repo_sco
     if not isinstance(stored, dict):
         raise ValueError("unknown validation receipt")
     row = deepcopy(stored)
+    if set(row) != RECEIPT_FIELDS:
+        raise ValueError("invalid validation receipt schema")
     if row.get("schema_version") != 2 or row.get("kind") != "validation-pass":
         raise ValueError("invalid validation receipt")
     if row.get("receipt_id") != receipt_id:
         raise ValueError("receipt id mismatch")
-    if row.get("consumed") is not False:
-        raise ValueError("validation receipt already consumed")
+    if row.get("consumed") is not False or row.get("consumed_action") is not None or row.get("consumed_at") is not None:
+        raise ValueError("validation receipt already consumed or malformed")
     if row.get("authorized_action") != action:
         raise ValueError("validation receipt action mismatch")
     if row.get("scope_hash") != _scope_hash(chat_id, project_id, repo_scope):
