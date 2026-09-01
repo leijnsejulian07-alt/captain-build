@@ -4,14 +4,16 @@ from promotion_receipt_gate import consume_receipt, issue_receipt
 
 
 class PromotionReceiptGateTests(unittest.TestCase):
-    def base(self):
-        row = issue_receipt(
+    def base(self, **overrides):
+        kw = dict(
             receipt_id="vr-1", chat_id="chat-a", project_id="project-a",
             repo_scope="C:/repo/a", session_id="session-a",
             runtime_generation="epoch-a", profile_id="default",
             worktree_fingerprint="tree-a", issued_at=1000, expires_at=1300,
-            validation_status="pass")
-        return {"vr-1": row}
+            validation_status="pass", authorized_action="promote")
+        kw.update(overrides)
+        row = issue_receipt(**kw)
+        return {row["receipt_id"]: row}
 
     def consume(self, ledger=None, **overrides):
         kw = dict(receipt_id="vr-1", action="promote", chat_id="chat-a",
@@ -40,6 +42,21 @@ class PromotionReceiptGateTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 self.consume(**{key: value})
 
+    def test_action_is_bound_at_receipt_issue_time(self):
+        approve_ledger = self.base(authorized_action="approve")
+        with self.assertRaisesRegex(ValueError, "action mismatch"):
+            self.consume(ledger=approve_ledger, action="merge")
+        ledger, public = self.consume(ledger=approve_ledger, action="approve")
+        self.assertEqual(public["action"], "approve")
+        self.assertEqual(ledger["vr-1"]["consumed_action"], "approve")
+
+    def test_legacy_unbound_receipt_fails_closed(self):
+        ledger = self.base()
+        ledger["vr-1"]["schema_version"] = 1
+        ledger["vr-1"].pop("authorized_action")
+        with self.assertRaisesRegex(ValueError, "invalid validation receipt"):
+            self.consume(ledger=ledger)
+
     def test_worktree_mutation_invalidates_receipt(self):
         with self.assertRaisesRegex(ValueError, "worktree mismatch"):
             self.consume(current_worktree_fingerprint="tree-after-edit")
@@ -55,16 +72,20 @@ class PromotionReceiptGateTests(unittest.TestCase):
             issue_receipt(receipt_id="vr-x", chat_id="c", project_id="p",
                           repo_scope="repo", session_id="s", runtime_generation="e",
                           profile_id="default", worktree_fingerprint="tree",
-                          issued_at=1, expires_at=2, validation_status="fail")
+                          issued_at=1, expires_at=2, validation_status="fail",
+                          authorized_action="promote")
 
     def test_ttl_is_bounded(self):
         with self.assertRaisesRegex(ValueError, "ttl invalid"):
             issue_receipt(receipt_id="vr-x", chat_id="c", project_id="p",
                           repo_scope="repo", session_id="s", runtime_generation="e",
                           profile_id="default", worktree_fingerprint="tree",
-                          issued_at=1, expires_at=5000, validation_status="pass")
+                          issued_at=1, expires_at=5000, validation_status="pass",
+                          authorized_action="promote")
 
-    def test_action_allowlist(self):
+    def test_action_allowlist_applies_to_issue_and_consume(self):
+        with self.assertRaisesRegex(ValueError, "unsupported promotion action"):
+            self.base(authorized_action="push-force")
         with self.assertRaisesRegex(ValueError, "unsupported promotion action"):
             self.consume(action="push-force")
 
