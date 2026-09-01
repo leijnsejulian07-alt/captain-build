@@ -8,12 +8,14 @@ from copy import deepcopy
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
 ACTIONS = {"approve", "promote", "merge"}
 MAX_TTL_SECONDS = 3600
+MAX_PREPARE_AGE_SECONDS = 30
 RECEIPT_FIELDS = {
     "schema_version", "receipt_id", "kind", "scope_hash", "session_id",
     "runtime_generation_hash", "profile_id", "worktree_fingerprint_hash",
     "authorized_action", "issued_at", "expires_at", "consumed",
     "consumed_action", "consumed_at",
 }
+PLAN_FIELDS = {"receipt_id", "expected_state_token", "prepared_at", "accepted", "action"}
 
 
 def _need_id(name, value):
@@ -78,20 +80,12 @@ def issue_receipt(*, receipt_id, chat_id, project_id, repo_scope, session_id,
     if expires_at <= issued_at or expires_at - issued_at > MAX_TTL_SECONDS:
         raise ValueError("receipt ttl invalid")
     return {
-        "schema_version": 2,
-        "receipt_id": receipt_id,
-        "kind": "validation-pass",
-        "scope_hash": _scope_hash(chat_id, project_id, repo_scope),
-        "session_id": session_id,
-        "runtime_generation_hash": _fingerprint(runtime_generation),
-        "profile_id": profile_id,
+        "schema_version": 2, "receipt_id": receipt_id, "kind": "validation-pass",
+        "scope_hash": _scope_hash(chat_id, project_id, repo_scope), "session_id": session_id,
+        "runtime_generation_hash": _fingerprint(runtime_generation), "profile_id": profile_id,
         "worktree_fingerprint_hash": _fingerprint(worktree_fingerprint),
-        "authorized_action": authorized_action,
-        "issued_at": issued_at,
-        "expires_at": expires_at,
-        "consumed": False,
-        "consumed_action": None,
-        "consumed_at": None,
+        "authorized_action": authorized_action, "issued_at": issued_at, "expires_at": expires_at,
+        "consumed": False, "consumed_action": None, "consumed_at": None,
     }
 
 
@@ -139,17 +133,12 @@ def _validated_consumption_row(ledger, *, receipt_id, action, chat_id, project_i
 
 
 def prepare_receipt_consumption(ledger, **kwargs):
-    """Prepare a CAS mutation. Applying it must independently re-check authoritative time."""
+    """Prepare a minimal CAS intent; applying it must independently re-check authoritative time."""
     receipt_id, action, row = _validated_consumption_row(ledger, **kwargs)
-    expected_state_token = receipt_state_token(row)
-    row["consumed"] = True
-    row["consumed_action"] = action
-    row["consumed_at"] = kwargs["now"]
     return {
         "receipt_id": receipt_id,
-        "expected_state_token": expected_state_token,
-        "replacement": row,
-        "replacement_state_token": receipt_state_token(row),
+        "expected_state_token": receipt_state_token(row),
+        "prepared_at": kwargs["now"],
         "accepted": True,
         "action": action,
     }
@@ -157,30 +146,35 @@ def prepare_receipt_consumption(ledger, **kwargs):
 
 def apply_prepared_consumption(ledger, plan, *, now):
     """In-memory CAS reference; durable stores must atomically CAS and re-check expiry."""
-    if not isinstance(ledger, dict) or not isinstance(plan, dict):
-        raise ValueError("ledger and consumption plan required")
+    if not isinstance(ledger, dict) or not isinstance(plan, dict) or set(plan) != PLAN_FIELDS:
+        raise ValueError("valid ledger and consumption plan required")
     now = _need_now(now)
     receipt_id = _need_id("receipt_id", plan.get("receipt_id"))
+    action = _need_action(plan.get("action"))
     expected = str(plan.get("expected_state_token") or "")
-    replacement = plan.get("replacement")
-    if not re.fullmatch(r"[0-9a-f]{64}", expected):
-        raise ValueError("valid expected receipt state token required")
+    prepared_at = _need_now(plan.get("prepared_at"))
+    if plan.get("accepted") is not True or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ValueError("invalid prepared consumption plan")
+    if now < prepared_at or now - prepared_at > MAX_PREPARE_AGE_SECONDS:
+        raise ValueError("prepared consumption plan expired or not yet valid")
     current = ledger.get(receipt_id)
     if not isinstance(current, dict) or receipt_state_token(current) != expected:
         raise ValueError("receipt state changed before atomic consume")
-    expires_at = current.get("expires_at")
-    issued_at = current.get("issued_at")
+    issued_at, expires_at = current.get("issued_at"), current.get("expires_at")
     if not isinstance(issued_at, int) or isinstance(issued_at, bool) or not isinstance(expires_at, int) or isinstance(expires_at, bool):
         raise ValueError("invalid receipt time bounds")
     if now < issued_at or now > expires_at:
         raise ValueError("validation receipt expired or not yet valid at atomic consume")
-    if not isinstance(replacement, dict) or receipt_state_token(replacement) != plan.get("replacement_state_token"):
-        raise ValueError("invalid replacement receipt state")
-    if replacement.get("consumed_at") != now:
-        raise ValueError("prepared consumption timestamp is stale")
+    if current.get("authorized_action") != action:
+        raise ValueError("prepared consumption action mismatch")
+    replacement = deepcopy(current)
+    replacement["consumed"] = True
+    replacement["consumed_action"] = action
+    replacement["consumed_at"] = now
+    receipt_state_token(replacement)
     updated = dict(ledger)
-    updated[receipt_id] = deepcopy(replacement)
-    return updated, {"receipt_id": receipt_id, "accepted": True, "action": replacement["consumed_action"]}
+    updated[receipt_id] = replacement
+    return updated, {"receipt_id": receipt_id, "accepted": True, "action": action}
 
 
 def consume_receipt(ledger, **kwargs):
