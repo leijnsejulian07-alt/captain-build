@@ -30,6 +30,12 @@ def _need_action(value):
     return value
 
 
+def _need_now(value):
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError("now must be int")
+    return value
+
+
 def _scope_hash(chat_id, project_id, repo_scope):
     chat_id = _need_id("chat_id", chat_id)
     project_id = _need_id("project_id", project_id)
@@ -50,10 +56,7 @@ def _fingerprint(value):
 def _canonical_receipt_bytes(row):
     if not isinstance(row, dict) or set(row) != RECEIPT_FIELDS:
         raise ValueError("invalid validation receipt schema")
-    return json.dumps(
-        row, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
+    return json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 def receipt_state_token(row):
@@ -70,10 +73,8 @@ def issue_receipt(*, receipt_id, chat_id, project_id, repo_scope, session_id,
     authorized_action = _need_action(authorized_action)
     if validation_status != "pass":
         raise ValueError("only passing validation may issue a receipt")
-    if not isinstance(issued_at, int) or isinstance(issued_at, bool):
-        raise ValueError("issued_at must be int")
-    if not isinstance(expires_at, int) or isinstance(expires_at, bool):
-        raise ValueError("expires_at must be int")
+    issued_at = _need_now(issued_at)
+    expires_at = _need_now(expires_at)
     if expires_at <= issued_at or expires_at - issued_at > MAX_TTL_SECONDS:
         raise ValueError("receipt ttl invalid")
     return {
@@ -101,8 +102,7 @@ def _validated_consumption_row(ledger, *, receipt_id, action, chat_id, project_i
         raise ValueError("receipt ledger required")
     receipt_id = _need_id("receipt_id", receipt_id)
     action = _need_action(action)
-    if not isinstance(now, int) or isinstance(now, bool):
-        raise ValueError("now must be int")
+    now = _need_now(now)
     stored = ledger.get(receipt_id)
     if not isinstance(stored, dict):
         raise ValueError("unknown validation receipt")
@@ -139,7 +139,7 @@ def _validated_consumption_row(ledger, *, receipt_id, action, chat_id, project_i
 
 
 def prepare_receipt_consumption(ledger, **kwargs):
-    """Prepare an atomic compare-and-swap mutation; this does not consume by itself."""
+    """Prepare a CAS mutation. Applying it must independently re-check authoritative time."""
     receipt_id, action, row = _validated_consumption_row(ledger, **kwargs)
     expected_state_token = receipt_state_token(row)
     row["consumed"] = True
@@ -155,10 +155,11 @@ def prepare_receipt_consumption(ledger, **kwargs):
     }
 
 
-def apply_prepared_consumption(ledger, plan):
-    """In-memory CAS reference. Durable stores must perform the same CAS atomically."""
+def apply_prepared_consumption(ledger, plan, *, now):
+    """In-memory CAS reference; durable stores must atomically CAS and re-check expiry."""
     if not isinstance(ledger, dict) or not isinstance(plan, dict):
         raise ValueError("ledger and consumption plan required")
+    now = _need_now(now)
     receipt_id = _need_id("receipt_id", plan.get("receipt_id"))
     expected = str(plan.get("expected_state_token") or "")
     replacement = plan.get("replacement")
@@ -167,13 +168,22 @@ def apply_prepared_consumption(ledger, plan):
     current = ledger.get(receipt_id)
     if not isinstance(current, dict) or receipt_state_token(current) != expected:
         raise ValueError("receipt state changed before atomic consume")
+    expires_at = current.get("expires_at")
+    issued_at = current.get("issued_at")
+    if not isinstance(issued_at, int) or isinstance(issued_at, bool) or not isinstance(expires_at, int) or isinstance(expires_at, bool):
+        raise ValueError("invalid receipt time bounds")
+    if now < issued_at or now > expires_at:
+        raise ValueError("validation receipt expired or not yet valid at atomic consume")
     if not isinstance(replacement, dict) or receipt_state_token(replacement) != plan.get("replacement_state_token"):
         raise ValueError("invalid replacement receipt state")
+    if replacement.get("consumed_at") != now:
+        raise ValueError("prepared consumption timestamp is stale")
     updated = dict(ledger)
     updated[receipt_id] = deepcopy(replacement)
     return updated, {"receipt_id": receipt_id, "accepted": True, "action": replacement["consumed_action"]}
 
 
 def consume_receipt(ledger, **kwargs):
-    """Compatibility helper for single-process tests; production integration must use atomic CAS."""
-    return apply_prepared_consumption(ledger, prepare_receipt_consumption(ledger, **kwargs))
+    """Compatibility helper for tests; production integration must use atomic durable CAS."""
+    plan = prepare_receipt_consumption(ledger, **kwargs)
+    return apply_prepared_consumption(ledger, plan, now=kwargs["now"])
