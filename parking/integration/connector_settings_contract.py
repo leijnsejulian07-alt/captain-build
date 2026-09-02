@@ -126,6 +126,8 @@ def evaluate_provider_compatibility(state: dict, expectation: dict, observed: di
         raise ContractError("connector mismatch")
     if observed["auth_method"] not in ALLOWED_AUTH:
         raise ContractError("observed auth")
+    if observed["auth_method"] != state["auth_method"]:
+        raise ContractError("observed auth does not match connector state")
     _clean_text(observed["setup_version"], 40)
     observed_client_version = _version_tuple(observed["client_version"])
 
@@ -143,6 +145,28 @@ def evaluate_provider_compatibility(state: dict, expectation: dict, observed: di
         "issues": issues,
         "requires_user_action": bool(issues),
     }
+
+
+def apply_provider_compatibility(state: dict, expectation: dict, observed: dict) -> dict:
+    """Return the canonical connector state after compatibility is applied fail-closed.
+
+    This is deliberately pure: it never mutates caller-owned state and never performs auth,
+    network, secret, or paid-provider actions. A provider incompatibility must be reflected in
+    the same state machine that drives Settings and Ready, rather than existing only as a side
+    report that callers can accidentally ignore.
+    """
+    compatibility = evaluate_provider_compatibility(state, expectation, observed)
+    result = dict(state)
+    if compatibility["compatible"]:
+        return result
+
+    issues = compatibility["issues"]
+    auth_blocked = any(issue in {"auth_method_deprecated", "auth_method_migration_required"} for issue in issues)
+    result["ready"] = False
+    result["health"] = "deprecated" if auth_blocked else "setup_required"
+    result["issue_code"] = issues[0]
+    validate_connector_state(result)
+    return result
 
 
 def build_notice(
@@ -179,6 +203,8 @@ def build_notice(
 
 def should_surface(notice: dict | None, state: dict, now: datetime) -> bool:
     validate_connector_state(state)
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise ContractError("now")
     if state["ready"]:
         return False
     if notice is None:
@@ -192,10 +218,20 @@ def should_surface(notice: dict | None, state: dict, now: datetime) -> bool:
         raise ContractError("notice schema")
     if notice["connector_id"] != state["connector_id"] or notice["project_id"] != state["project_id"]:
         raise ContractError("scope mismatch")
+    _clean_text(notice["issue_code"], 80)
+    _clean_text(notice["remediation_path"], 200)
+    if not notice["remediation_path"].startswith("settings://connectors/"):
+        raise ContractError("bad remediation")
     issue = state["issue_code"] or "not_ready"
     if notice["notice_fingerprint"] != _fingerprint(state["connector_id"], issue, state["project_id"]):
         return True
     dismiss_until = notice["dismiss_until"]
     if dismiss_until is None:
         return True
-    return now >= datetime.fromisoformat(dismiss_until)
+    try:
+        parsed_dismiss_until = datetime.fromisoformat(dismiss_until)
+    except (TypeError, ValueError) as exc:
+        raise ContractError("dismiss") from exc
+    if parsed_dismiss_until.tzinfo is None:
+        raise ContractError("dismiss")
+    return now >= parsed_dismiss_until
