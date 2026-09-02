@@ -1,7 +1,14 @@
 from datetime import datetime, timedelta, timezone
 import unittest
 
-from connector_settings_contract import ContractError, build_notice, should_surface, validate_connector_state
+from connector_settings_contract import (
+    ContractError,
+    build_notice,
+    evaluate_provider_compatibility,
+    should_surface,
+    validate_connector_state,
+    validate_provider_expectation,
+)
 
 
 BASE = {
@@ -17,6 +24,23 @@ BASE = {
     "permissions_granted": ["read"],
     "permissions_required": ["read"],
     "issue_code": None,
+}
+
+EXPECTATION = {
+    "schema_version": 1,
+    "connector_id": "github",
+    "auth_method": "oauth",
+    "setup_version": "2026-09",
+    "minimum_client_version": "1.4.0",
+    "deprecated_auth_methods": ["api_key"],
+}
+
+OBSERVED = {
+    "schema_version": 1,
+    "connector_id": "github",
+    "auth_method": "oauth",
+    "setup_version": "2026-09",
+    "client_version": "1.4.0",
 }
 
 
@@ -70,6 +94,78 @@ class ConnectorSettingsContractTests(unittest.TestCase):
         state.update(ready=False, health="invalid_auth", issue_code="reauth")
         notice = build_notice(state, "settings://connectors/github", now)
         self.assertEqual(notice["secret_fields"], [])
+
+    def test_provider_expectation_validates(self):
+        self.assertTrue(validate_provider_expectation(dict(EXPECTATION)))
+
+    def test_provider_compatibility_happy_path(self):
+        result = evaluate_provider_compatibility(BASE, EXPECTATION, OBSERVED)
+        self.assertEqual(
+            result,
+            {"compatible": True, "issues": [], "requires_user_action": False},
+        )
+
+    def test_deprecated_auth_requires_migration(self):
+        result = evaluate_provider_compatibility(
+            BASE,
+            EXPECTATION,
+            dict(OBSERVED, auth_method="api_key"),
+        )
+        self.assertIn("auth_method_deprecated", result["issues"])
+        self.assertIn("auth_method_migration_required", result["issues"])
+        self.assertTrue(result["requires_user_action"])
+
+    def test_setup_version_change_is_detected(self):
+        result = evaluate_provider_compatibility(
+            BASE,
+            EXPECTATION,
+            dict(OBSERVED, setup_version="2026-08"),
+        )
+        self.assertIn("setup_version_changed", result["issues"])
+
+    def test_old_client_version_is_detected(self):
+        result = evaluate_provider_compatibility(
+            BASE,
+            EXPECTATION,
+            dict(OBSERVED, client_version="1.3.9"),
+        )
+        self.assertIn("client_version_too_old", result["issues"])
+
+    def test_semantic_version_order_does_not_use_lexical_compare(self):
+        result = evaluate_provider_compatibility(
+            BASE,
+            EXPECTATION,
+            dict(OBSERVED, client_version="1.10.0"),
+        )
+        self.assertNotIn("client_version_too_old", result["issues"])
+
+    def test_malformed_client_version_fails_closed(self):
+        with self.assertRaises(ContractError):
+            evaluate_provider_compatibility(
+                BASE,
+                EXPECTATION,
+                dict(OBSERVED, client_version="v1.4"),
+            )
+
+    def test_cross_connector_observation_fails_closed(self):
+        with self.assertRaises(ContractError):
+            evaluate_provider_compatibility(
+                BASE,
+                EXPECTATION,
+                dict(OBSERVED, connector_id="gmail"),
+            )
+
+    def test_expected_auth_cannot_also_be_deprecated(self):
+        with self.assertRaises(ContractError):
+            validate_provider_expectation(
+                dict(EXPECTATION, deprecated_auth_methods=["oauth"])
+            )
+
+    def test_unknown_provider_fields_fail_closed(self):
+        expectation = dict(EXPECTATION)
+        expectation["secret"] = "nope"
+        with self.assertRaises(ContractError):
+            validate_provider_expectation(expectation)
 
 
 if __name__ == "__main__":
