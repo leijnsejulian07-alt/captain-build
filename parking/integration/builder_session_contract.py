@@ -16,7 +16,7 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _CAP_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 ALLOWED_CAPABILITIES = frozenset({
-    "console_read", "diff_read", "diff_write", "file_read", "file_write",
+    "console_read", "context_sync", "diff_read", "diff_write", "file_read", "file_write",
     "preview_open", "preview_reload", "rollback", "test_run",
 })
 
