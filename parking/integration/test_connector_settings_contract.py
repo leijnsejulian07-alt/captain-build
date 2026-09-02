@@ -3,6 +3,7 @@ import unittest
 
 from connector_settings_contract import (
     ContractError,
+    apply_provider_compatibility,
     build_notice,
     evaluate_provider_compatibility,
     should_surface,
@@ -106,11 +107,9 @@ class ConnectorSettingsContractTests(unittest.TestCase):
         )
 
     def test_deprecated_auth_requires_migration(self):
-        result = evaluate_provider_compatibility(
-            BASE,
-            EXPECTATION,
-            dict(OBSERVED, auth_method="api_key"),
-        )
+        state = dict(BASE, auth_method="api_key")
+        observed = dict(OBSERVED, auth_method="api_key")
+        result = evaluate_provider_compatibility(state, EXPECTATION, observed)
         self.assertIn("auth_method_deprecated", result["issues"])
         self.assertIn("auth_method_migration_required", result["issues"])
         self.assertTrue(result["requires_user_action"])
@@ -155,6 +154,14 @@ class ConnectorSettingsContractTests(unittest.TestCase):
                 dict(OBSERVED, connector_id="gmail"),
             )
 
+    def test_observed_auth_must_match_canonical_state(self):
+        with self.assertRaises(ContractError):
+            evaluate_provider_compatibility(
+                BASE,
+                EXPECTATION,
+                dict(OBSERVED, auth_method="api_key"),
+            )
+
     def test_expected_auth_cannot_also_be_deprecated(self):
         with self.assertRaises(ContractError):
             validate_provider_expectation(
@@ -166,6 +173,50 @@ class ConnectorSettingsContractTests(unittest.TestCase):
         expectation["secret"] = "nope"
         with self.assertRaises(ContractError):
             validate_provider_expectation(expectation)
+
+    def test_provider_incompatibility_canonically_blocks_ready(self):
+        result = apply_provider_compatibility(
+            BASE,
+            EXPECTATION,
+            dict(OBSERVED, setup_version="2026-08"),
+        )
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["health"], "setup_required")
+        self.assertEqual(result["issue_code"], "setup_version_changed")
+        self.assertTrue(validate_connector_state(result))
+
+    def test_auth_migration_uses_deprecated_health_and_notice(self):
+        now = datetime.now(timezone.utc)
+        state = dict(BASE, auth_method="api_key")
+        observed = dict(OBSERVED, auth_method="api_key")
+        result = apply_provider_compatibility(state, EXPECTATION, observed)
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["health"], "deprecated")
+        self.assertEqual(result["issue_code"], "auth_method_deprecated")
+        notice = build_notice(result, "settings://connectors/github", now)
+        self.assertTrue(should_surface(notice, result, now))
+
+    def test_compatible_provider_keeps_ready_without_mutating_input(self):
+        original = dict(BASE)
+        result = apply_provider_compatibility(BASE, EXPECTATION, OBSERVED)
+        self.assertEqual(result, BASE)
+        self.assertIsNot(result, BASE)
+        self.assertEqual(BASE, original)
+
+    def test_should_surface_rejects_naive_current_time(self):
+        state = dict(BASE)
+        state.update(ready=False, health="setup_required", issue_code="setup")
+        with self.assertRaises(ContractError):
+            should_surface(None, state, datetime.now())
+
+    def test_should_surface_rejects_malformed_dismiss_timestamp(self):
+        now = datetime.now(timezone.utc)
+        state = dict(BASE)
+        state.update(ready=False, health="setup_required", issue_code="setup")
+        notice = build_notice(state, "settings://connectors/github", now)
+        notice["dismiss_until"] = "not-a-time"
+        with self.assertRaises(ContractError):
+            should_surface(notice, state, now)
 
 
 if __name__ == "__main__":
