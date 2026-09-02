@@ -31,6 +31,14 @@ def _fingerprint(connector_id: str, issue_code: str, project_id: str) -> str:
     return sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _version_tuple(value: object) -> tuple[int, ...]:
+    text = _clean_text(value, 40)
+    parts = text.split(".")
+    if not (1 <= len(parts) <= 4) or any(not part.isdigit() for part in parts):
+        raise ContractError("invalid version")
+    return tuple(int(part) for part in parts)
+
+
 def validate_connector_state(state: dict) -> bool:
     fields = {
         "schema_version", "connector_id", "project_id", "installed", "connected", "enabled", "ready",
@@ -80,6 +88,61 @@ def validate_connector_state(state: dict) -> bool:
     if state["health"] == "healthy" and issue is not None:
         raise ContractError("healthy cannot carry issue")
     return True
+
+
+def validate_provider_expectation(expectation: dict) -> bool:
+    fields = {
+        "schema_version", "connector_id", "auth_method", "setup_version",
+        "minimum_client_version", "deprecated_auth_methods",
+    }
+    _strict_keys(expectation, fields, fields)
+    if expectation["schema_version"] != 1:
+        raise ContractError("provider schema")
+    _clean_text(expectation["connector_id"], 80)
+    if expectation["auth_method"] not in ALLOWED_AUTH:
+        raise ContractError("provider auth")
+    _clean_text(expectation["setup_version"], 40)
+    _version_tuple(expectation["minimum_client_version"])
+    deprecated = expectation["deprecated_auth_methods"]
+    if (
+        not isinstance(deprecated, list)
+        or len(deprecated) > len(ALLOWED_AUTH)
+        or len(deprecated) != len(set(deprecated))
+        or any(method not in ALLOWED_AUTH for method in deprecated)
+        or expectation["auth_method"] in deprecated
+    ):
+        raise ContractError("deprecated auth")
+    return True
+
+
+def evaluate_provider_compatibility(state: dict, expectation: dict, observed: dict) -> dict:
+    validate_connector_state(state)
+    validate_provider_expectation(expectation)
+    fields = {"schema_version", "connector_id", "auth_method", "setup_version", "client_version"}
+    _strict_keys(observed, fields, fields)
+    if observed["schema_version"] != 1:
+        raise ContractError("observed schema")
+    if observed["connector_id"] != state["connector_id"] or observed["connector_id"] != expectation["connector_id"]:
+        raise ContractError("connector mismatch")
+    if observed["auth_method"] not in ALLOWED_AUTH:
+        raise ContractError("observed auth")
+    _clean_text(observed["setup_version"], 40)
+    observed_client_version = _version_tuple(observed["client_version"])
+
+    issues = []
+    if observed["auth_method"] in expectation["deprecated_auth_methods"]:
+        issues.append("auth_method_deprecated")
+    if observed["auth_method"] != expectation["auth_method"]:
+        issues.append("auth_method_migration_required")
+    if observed["setup_version"] != expectation["setup_version"]:
+        issues.append("setup_version_changed")
+    if observed_client_version < _version_tuple(expectation["minimum_client_version"]):
+        issues.append("client_version_too_old")
+    return {
+        "compatible": not issues,
+        "issues": issues,
+        "requires_user_action": bool(issues),
+    }
 
 
 def build_notice(
