@@ -15,6 +15,13 @@ class Scope:
         return self.project_id is None and self.repo_scope is None and self.state_epoch is None
 
     @property
+    def is_normal_chat(self) -> bool:
+        return self.is_normal
+
+    def normal(self) -> bool:
+        return self.is_normal
+
+    @property
     def is_complete_project_scope(self) -> bool:
         valid_project_id = isinstance(self.project_id, str) and bool(self.project_id.strip())
         valid_repo_scope = isinstance(self.repo_scope, str) and bool(self.repo_scope.strip())
