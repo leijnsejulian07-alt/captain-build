@@ -8,9 +8,9 @@ integration run an executable contract for the required Project State walls.
 Expected production semantics:
 - Normal chat remains usable without project scope.
 - Project chat requires complete (project_id, repo_scope, state_epoch) scope.
-- repo_scope is canonicalized before comparison/storage.
 - Cross-project list/read/delete fail closed.
 - Chats from a stale Project State epoch are inaccessible after epoch advance.
+- Malformed/ambiguous scopes fail closed.
 """
 
 from dataclasses import dataclass
@@ -29,12 +29,10 @@ class Scope:
 
     @property
     def is_complete_project_scope(self) -> bool:
-        return (
-            bool(self.project_id)
-            and bool(self.repo_scope)
-            and isinstance(self.state_epoch, int)
-            and self.state_epoch >= 0
-        )
+        valid_project_id = isinstance(self.project_id, str) and bool(self.project_id.strip())
+        valid_repo_scope = isinstance(self.repo_scope, str) and bool(self.repo_scope.strip())
+        valid_epoch = type(self.state_epoch) is int and self.state_epoch >= 0
+        return valid_project_id and valid_repo_scope and valid_epoch
 
     def validate(self) -> None:
         if self.is_normal_chat:
@@ -60,7 +58,6 @@ def visible(chat: Chat, request_scope: Scope) -> bool:
 
 
 def deletable(chat: Chat, request_scope: Scope) -> bool:
-    # Delete uses the exact same ownership wall as list/read.
     return visible(chat, request_scope)
 
 
@@ -69,7 +66,7 @@ def test_normal_chat_works_without_project_scope() -> None:
     assert visible(normal, Scope())
 
 
-def test_partial_scope_fails_closed() -> None:
+def test_partial_and_malformed_scope_fails_closed() -> None:
     bad_scopes = [
         Scope(project_id="p1"),
         Scope(repo_scope="repo"),
@@ -77,6 +74,11 @@ def test_partial_scope_fails_closed() -> None:
         Scope(project_id="p1", repo_scope="repo"),
         Scope(project_id="p1", state_epoch=1),
         Scope(repo_scope="repo", state_epoch=1),
+        Scope(" ", "repo", 1),
+        Scope("p1", " ", 1),
+        Scope("p1", "repo", True),
+        Scope("p1", "repo", False),
+        Scope("p1", "repo", -1),
     ]
     for scope in bad_scopes:
         try:
@@ -84,7 +86,7 @@ def test_partial_scope_fails_closed() -> None:
         except ValueError:
             pass
         else:
-            raise AssertionError(f"partial scope unexpectedly accepted: {scope!r}")
+            raise AssertionError(f"invalid scope unexpectedly accepted: {scope!r}")
 
 
 def test_cross_project_visibility_and_delete_are_denied() -> None:
@@ -126,7 +128,7 @@ def test_project_chat_not_visible_in_normal_chat() -> None:
 if __name__ == "__main__":
     tests = [
         test_normal_chat_works_without_project_scope,
-        test_partial_scope_fails_closed,
+        test_partial_and_malformed_scope_fails_closed,
         test_cross_project_visibility_and_delete_are_denied,
         test_cross_repo_visibility_is_denied,
         test_stale_epoch_is_revoked,
@@ -134,4 +136,4 @@ if __name__ == "__main__":
     ]
     for test in tests:
         test()
-    print("CHAT_EPOCH_SCOPE_CONTRACT_PASS")
+    print("CHAT_EPOCH_SCOPE_HARDENED_PASS")
