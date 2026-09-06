@@ -1,26 +1,8 @@
 """Provider-free acceptance contract for Captain Project Memory/context epoch isolation."""
 
 from dataclasses import dataclass
-from typing import Optional
 
-
-@dataclass(frozen=True)
-class Scope:
-    project_id: Optional[str] = None
-    repo_scope: Optional[str] = None
-    state_epoch: Optional[int] = None
-
-    def normal(self):
-        return self.project_id is None and self.repo_scope is None and self.state_epoch is None
-
-    def validate(self):
-        if self.normal():
-            return
-        valid_project_id = isinstance(self.project_id, str) and bool(self.project_id.strip())
-        valid_repo_scope = isinstance(self.repo_scope, str) and bool(self.repo_scope.strip())
-        valid_epoch = type(self.state_epoch) is int and self.state_epoch >= 0
-        if not (valid_project_id and valid_repo_scope and valid_epoch):
-            raise ValueError("invalid partial project scope")
+from project_scope_contract import Scope
 
 
 @dataclass(frozen=True)
