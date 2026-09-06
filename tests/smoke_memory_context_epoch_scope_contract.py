@@ -16,7 +16,10 @@ class Scope:
     def validate(self):
         if self.normal():
             return
-        if not (self.project_id and self.repo_scope and isinstance(self.state_epoch, int) and self.state_epoch >= 0):
+        valid_project_id = isinstance(self.project_id, str) and bool(self.project_id.strip())
+        valid_repo_scope = isinstance(self.repo_scope, str) and bool(self.repo_scope.strip())
+        valid_epoch = type(self.state_epoch) is int and self.state_epoch >= 0
+        if not (valid_project_id and valid_repo_scope and valid_epoch):
             raise ValueError("invalid partial project scope")
 
 
@@ -31,8 +34,15 @@ class Record:
 def readable(record, request_scope):
     request_scope.validate()
     record.scope.validate()
+
+    # Raw project memory never crosses an ownership wall. Shared learning must
+    # first be distilled into explicitly global, non-project-specific state.
     if request_scope.normal():
-        return record.scope.normal() or (record.generic and not record.project_specific)
+        return record.scope.normal()
+
+    if record.scope.normal():
+        return record.generic and not record.project_specific
+
     return record.scope == request_scope
 
 
@@ -40,18 +50,23 @@ def test_normal_context():
     assert readable(Record("normal", Scope()), Scope())
 
 
-def test_partial_scope_denied():
+def test_partial_and_malformed_scope_denied():
     for scope in (
         Scope(project_id="a"),
         Scope(repo_scope="r"),
         Scope(state_epoch=1),
         Scope(project_id="a", repo_scope="r"),
+        Scope(" ", "repo/one", 1),
+        Scope("a", " ", 1),
+        Scope("a", "repo/one", True),
+        Scope("a", "repo/one", False),
+        Scope("a", "repo/one", -1),
     ):
         try:
             scope.validate()
         except ValueError:
             continue
-        raise AssertionError("partial scope accepted")
+        raise AssertionError(f"invalid scope accepted: {scope!r}")
 
 
 def test_project_and_repo_isolation():
@@ -76,18 +91,31 @@ def test_project_context_not_visible_to_normal_chat():
     assert not readable(Record("m", Scope("a", "repo/one", 1)), Scope())
 
 
-def test_only_explicit_generic_distillation_can_cross_scope():
+def test_shared_learning_requires_global_distillation():
     project = Scope("a", "repo/one", 1)
-    assert readable(Record("safe", project, generic=True, project_specific=False), Scope())
-    assert not readable(Record("raw", project, generic=False, project_specific=False), Scope())
-    assert not readable(Record("specific", project, generic=True, project_specific=True), Scope())
+
+    # Merely marking raw project memory generic is insufficient.
+    assert not readable(
+        Record("unsafe-raw", project, generic=True, project_specific=False),
+        Scope(),
+    )
+
+    # Explicitly global distilled learning may be consumed inside a project.
+    assert readable(
+        Record("safe-global", Scope(), generic=True, project_specific=False),
+        project,
+    )
+    assert not readable(
+        Record("specific-global", Scope(), generic=True, project_specific=True),
+        project,
+    )
 
 
 if __name__ == "__main__":
     test_normal_context()
-    test_partial_scope_denied()
+    test_partial_and_malformed_scope_denied()
     test_project_and_repo_isolation()
     test_stale_epoch_revoked()
     test_project_context_not_visible_to_normal_chat()
-    test_only_explicit_generic_distillation_can_cross_scope()
-    print("MEMORY_CONTEXT_EPOCH_SCOPE_CONTRACT_PASS")
+    test_shared_learning_requires_global_distillation()
+    print("MEMORY_CONTEXT_EPOCH_SCOPE_HARDENED_PASS")
