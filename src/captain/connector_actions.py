@@ -19,6 +19,7 @@ from .connector_settings import (
 )
 
 _SENSITIVE_KEYS = ("secret", "token", "password", "api_key", "apikey", "credential", "authorization")
+_ALLOWED_CREDENTIAL_SCHEMES = {"vault", "os-credential", "secretref"}
 
 
 def _validate_safe_metadata(value: object, *, path: str = "metadata") -> None:
@@ -31,6 +32,14 @@ def _validate_safe_metadata(value: object, *, path: str = "metadata") -> None:
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _validate_safe_metadata(item, path=f"{path}[{index}]")
+
+
+def _validate_credential_handle(handle: str) -> None:
+    parsed = urlparse(handle)
+    if parsed.scheme not in _ALLOWED_CREDENTIAL_SCHEMES or not (parsed.netloc or parsed.path):
+        raise ConnectorError("credential reference must use an approved credential-store scheme")
+    if parsed.query or parsed.fragment or "@" in parsed.netloc:
+        raise ConnectorError("credential reference may not embed query, fragment, or userinfo")
 
 
 @dataclass(frozen=True)
@@ -105,8 +114,10 @@ class ConnectorActionService:
         setup, adapter = self._parts(connector_id, project_id)
         if setup.auth_method is AuthMethod.OAUTH and credential_handle is not None:
             raise ConnectorError("OAuth must use the official provider flow")
-        if setup.auth_method in {AuthMethod.API_KEY, AuthMethod.ID_BASED} and not credential_handle:
-            raise ConnectorError("credential-store handle is required")
+        if setup.auth_method in {AuthMethod.API_KEY, AuthMethod.ID_BASED}:
+            if not credential_handle:
+                raise ConnectorError("credential-store handle is required")
+            _validate_credential_handle(credential_handle)
         result = adapter.connect(project_id=project_id, credential_handle=credential_handle)
         result.validate(auth_method=setup.auth_method)
         if result.connected:
