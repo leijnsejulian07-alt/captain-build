@@ -7,7 +7,9 @@ of trusting a storage implementation to have filtered scopes correctly.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Iterable, Mapping, Optional, Tuple
 
 from .memory_context_store import EpochBoundMemoryContextStore, MemoryContextRecord
@@ -85,14 +87,15 @@ class ContextAssembler:
         scalar_chars = 0
         items = []
         for _, record, provenance in ordered:
-            scalar_chars += self._validate_payload(record.payload)
+            payload, payload_chars = self._snapshot_payload(record.payload)
+            scalar_chars += payload_chars
             if scalar_chars > self._max_scalar_chars:
                 raise AuthorityError("model context scalar budget exceeded")
             items.append(
                 PromptContextItem(
                     record_id=record.record_id,
                     kind=record.kind,
-                    payload=record.payload,
+                    payload=payload,
                     provenance=provenance,
                 )
             )
@@ -127,31 +130,49 @@ class ContextAssembler:
         return "current_project_epoch", 2
 
     @classmethod
-    def _validate_payload(cls, payload: Mapping[str, object]) -> int:
-        if not isinstance(payload, Mapping):
-            raise AuthorityError("model context payload must be a mapping")
-        return cls._count_mapping(payload, path="$")
+    def _snapshot_payload(cls, payload: Mapping[str, object]) -> tuple[Mapping[str, object], int]:
+        """Re-snapshot backend data at the final model-facing trust boundary.
 
-    @classmethod
-    def _count_mapping(cls, value: Mapping[str, object], *, path: str) -> int:
+        Even an authorized backend must not be able to mutate a prompt bundle
+        after Captain has validated its scope and budget. Only plain dicts and
+        MappingProxyType snapshots are accepted here; arbitrary Mapping
+        implementations are rejected so prompt assembly does not execute custom
+        iterator/accessor code from a plugin or provider object.
+        """
+        if type(payload) is not dict and not isinstance(payload, MappingProxyType):
+            raise AuthorityError("model context payload must be a plain/frozen mapping")
+        frozen: dict[str, object] = {}
         total = 0
-        for key, nested in value.items():
+        for key, nested in payload.items():
             if not isinstance(key, str) or not key:
-                raise AuthorityError(f"invalid model context key at {path}")
+                raise AuthorityError("invalid model context key at $")
             total += len(key)
-            total += cls._count_value(nested, path=f"{path}.{key}")
-        return total
+            snap, chars = cls._snapshot_value(nested, path=f"$.{key}")
+            frozen[key] = snap
+            total += chars
+        return MappingProxyType(frozen), total
 
     @classmethod
-    def _count_value(cls, value: object, *, path: str) -> int:
+    def _snapshot_value(cls, value: object, *, path: str) -> tuple[object, int]:
         if value is None:
-            return 0
-        if isinstance(value, (str, bool, int, float)):
-            return len(str(value))
-        if isinstance(value, Mapping):
-            return cls._count_mapping(value, path=path)
+            return None, 0
+        if isinstance(value, (str, bool, int)):
+            return value, len(str(value))
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise AuthorityError(f"non-finite model context float at {path}")
+            return value, len(str(value))
+        if type(value) is dict or isinstance(value, MappingProxyType):
+            nested, chars = cls._snapshot_payload(value)
+            return nested, chars
         if type(value) is tuple:
-            return sum(cls._count_value(item, path=f"{path}[]") for item in value)
+            items = []
+            total = 0
+            for index, nested in enumerate(value):
+                snap, chars = cls._snapshot_value(nested, path=f"{path}[{index}]")
+                items.append(snap)
+                total += chars
+            return tuple(items), total
         raise AuthorityError(
             f"unsupported model context value at {path}: {type(value).__name__}"
         )
