@@ -88,11 +88,17 @@ class ConnectionTestResult:
 
     def validate(self) -> None:
         _validate_safe_metadata({} if self.safe_metadata is None else self.safe_metadata)
+        if not isinstance(self.safe_message, str) or not self.safe_message.strip():
+            raise ConnectorError("connection-test message must be non-empty")
         if any(marker in self.safe_message.lower() for marker in _SENSITIVE_KEYS):
             raise ConnectorError("connection-test message may expose sensitive material")
         _validate_permissions(self.granted_permissions)
         if self.granted_permissions and not self.permissions_authoritative:
             raise ConnectorError("test permissions require an authoritative provider observation")
+        if not self.ok and self.health is ConnectorHealth.HEALTHY:
+            raise ConnectorError("failed connection test cannot report healthy status")
+        if self.ok and self.health is ConnectorHealth.AUTH_INVALID:
+            raise ConnectorError("successful connection test cannot report invalid authentication")
 
 
 class ConnectorProviderAdapter(Protocol):
