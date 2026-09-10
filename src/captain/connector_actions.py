@@ -42,16 +42,29 @@ def _validate_credential_handle(handle: str) -> None:
         raise ConnectorError("credential reference may not embed query, fragment, or userinfo")
 
 
+def _validate_permissions(permissions: Tuple[str, ...]) -> None:
+    if len(set(permissions)) != len(permissions):
+        raise ConnectorError("provider returned duplicate permissions")
+    for permission in permissions:
+        if not isinstance(permission, str) or not permission.strip() or permission != permission.strip():
+            raise ConnectorError("provider permissions must be non-empty normalized strings")
+        lowered = permission.lower()
+        if any(marker in lowered for marker in _SENSITIVE_KEYS):
+            raise ConnectorError("provider permission name appears to expose sensitive material")
+
+
 @dataclass(frozen=True)
 class ConnectResult:
     connected: bool
     auth_material_present: bool
     authorization_url: Optional[str] = None
     safe_metadata: Mapping[str, object] = None
+    granted_permissions: Tuple[str, ...] = ()
 
     def validate(self, *, auth_method: AuthMethod) -> None:
         metadata = {} if self.safe_metadata is None else self.safe_metadata
         _validate_safe_metadata(metadata)
+        _validate_permissions(self.granted_permissions)
         if self.connected and auth_method in {AuthMethod.OAUTH, AuthMethod.API_KEY, AuthMethod.ID_BASED} and not self.auth_material_present:
             raise ConnectorError("authenticated connection succeeded without auth material")
         if self.authorization_url is not None:
@@ -134,7 +147,17 @@ class ConnectorActionService:
         if result.connected:
             current = self._registry.get(connector_id, project_id=project_id)
             assert current is not None
-            self._registry.put(replace(current, connected=True, auth_material_present=result.auth_material_present))
+            # Replace, never merge, provider permissions on each successful connection.
+            # This is fail-closed: an adapter that omits scopes cannot inherit stale
+            # privileges from an older authorization grant.
+            self._registry.put(
+                replace(
+                    current,
+                    connected=True,
+                    auth_material_present=result.auth_material_present,
+                    permissions=frozenset(result.granted_permissions),
+                )
+            )
         return result
 
     def test_connection(self, connector_id: str, *, project_id: Optional[str], user_initiated: bool) -> ConnectionTestResult:
