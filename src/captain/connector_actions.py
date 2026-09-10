@@ -1,0 +1,129 @@
+"""Safe execution boundary for Captain connector actions.
+
+Provider adapters own OAuth/browser flows and credential-store interaction. Captain
+keeps only lifecycle/health metadata and opaque credential handles; raw secrets never
+enter registry state, action receipts, or persistent event checkpoints.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from typing import Dict, Mapping, Optional, Protocol, Tuple
+from urllib.parse import urlparse
+
+from .connector_settings import (
+    AuthMethod,
+    ConnectorError,
+    ConnectorHealth,
+    ConnectorSetupSpec,
+    ConnectorSettingsRegistry,
+)
+
+_SENSITIVE_KEYS = ("secret", "token", "password", "api_key", "apikey", "credential", "authorization")
+
+
+def _validate_safe_metadata(value: object, *, path: str = "metadata") -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            name = str(key).lower()
+            if any(marker in name for marker in _SENSITIVE_KEYS):
+                raise ConnectorError(f"sensitive field forbidden in {path}")
+            _validate_safe_metadata(item, path=f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_safe_metadata(item, path=f"{path}[{index}]")
+
+
+@dataclass(frozen=True)
+class ConnectResult:
+    connected: bool
+    auth_material_present: bool
+    authorization_url: Optional[str] = None
+    safe_metadata: Mapping[str, object] = None
+
+    def validate(self, *, auth_method: AuthMethod) -> None:
+        metadata = {} if self.safe_metadata is None else self.safe_metadata
+        _validate_safe_metadata(metadata)
+        if self.connected and auth_method in {AuthMethod.OAUTH, AuthMethod.API_KEY, AuthMethod.ID_BASED} and not self.auth_material_present:
+            raise ConnectorError("authenticated connection succeeded without auth material")
+        if self.authorization_url is not None:
+            parsed = urlparse(self.authorization_url)
+            if auth_method is not AuthMethod.OAUTH:
+                raise ConnectorError("authorization URL is OAuth-only")
+            if parsed.scheme != "https" or not parsed.netloc:
+                raise ConnectorError("OAuth authorization URL must use HTTPS")
+
+
+@dataclass(frozen=True)
+class ConnectionTestResult:
+    ok: bool
+    health: ConnectorHealth
+    safe_message: str
+    provider_version: str = ""
+    provider_auth_version: str = ""
+    safe_metadata: Mapping[str, object] = None
+
+    def validate(self) -> None:
+        _validate_safe_metadata({} if self.safe_metadata is None else self.safe_metadata)
+        if any(marker in self.safe_message.lower() for marker in _SENSITIVE_KEYS):
+            raise ConnectorError("connection-test message may expose sensitive material")
+
+
+class ConnectorProviderAdapter(Protocol):
+    def connect(self, *, project_id: Optional[str], credential_handle: Optional[str]) -> ConnectResult: ...
+    def test_connection(self, *, project_id: Optional[str]) -> ConnectionTestResult: ...
+
+
+class ConnectorActionService:
+    """Runs explicit connector actions without becoming an auth or routing daemon."""
+
+    def __init__(self, registry: ConnectorSettingsRegistry) -> None:
+        self._registry = registry
+        self._setups: Dict[str, ConnectorSetupSpec] = {}
+        self._adapters: Dict[str, ConnectorProviderAdapter] = {}
+
+    def register(self, setup: ConnectorSetupSpec, adapter: ConnectorProviderAdapter) -> None:
+        setup.validate()
+        if setup.connector_id in self._setups:
+            raise ConnectorError("connector adapter already registered")
+        self._setups[setup.connector_id] = setup
+        self._adapters[setup.connector_id] = adapter
+
+    def _parts(self, connector_id: str, project_id: Optional[str]) -> Tuple[ConnectorSetupSpec, ConnectorProviderAdapter]:
+        setup, adapter = self._setups.get(connector_id), self._adapters.get(connector_id)
+        if setup is None or adapter is None:
+            raise ConnectorError("connector adapter is not registered")
+        state = self._registry.get(connector_id, project_id=project_id)
+        if state is None or not state.installed:
+            raise ConnectorError("connector must be installed before actions can run")
+        if state.auth_method is not setup.auth_method:
+            raise ConnectorError("connector auth-method mismatch")
+        return setup, adapter
+
+    def connect(self, connector_id: str, *, project_id: Optional[str], credential_handle: Optional[str] = None, user_initiated: bool) -> ConnectResult:
+        if not user_initiated:
+            raise ConnectorError("connect requires explicit user action")
+        setup, adapter = self._parts(connector_id, project_id)
+        if setup.auth_method is AuthMethod.OAUTH and credential_handle is not None:
+            raise ConnectorError("OAuth must use the official provider flow")
+        if setup.auth_method in {AuthMethod.API_KEY, AuthMethod.ID_BASED} and not credential_handle:
+            raise ConnectorError("credential-store handle is required")
+        result = adapter.connect(project_id=project_id, credential_handle=credential_handle)
+        result.validate(auth_method=setup.auth_method)
+        if result.connected:
+            current = self._registry.get(connector_id, project_id=project_id)
+            assert current is not None
+            self._registry.put(replace(current, connected=True, auth_material_present=result.auth_material_present))
+        return result
+
+    def test_connection(self, connector_id: str, *, project_id: Optional[str], user_initiated: bool) -> ConnectionTestResult:
+        if not user_initiated:
+            raise ConnectorError("test connection requires explicit user action")
+        setup, adapter = self._parts(connector_id, project_id)
+        if not setup.test_connection_supported:
+            raise ConnectorError("connector does not support Test Connection")
+        result = adapter.test_connection(project_id=project_id)
+        result.validate()
+        current = self._registry.get(connector_id, project_id=project_id)
+        assert current is not None
+        self._registry.put(replace(current, health=result.health, version=result.provider_version or current.version, provider_auth_version=result.provider_auth_version or current.provider_auth_version))
+        return result
