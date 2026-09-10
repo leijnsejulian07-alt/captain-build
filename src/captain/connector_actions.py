@@ -83,11 +83,16 @@ class ConnectionTestResult:
     provider_version: str = ""
     provider_auth_version: str = ""
     safe_metadata: Mapping[str, object] = None
+    permissions_authoritative: bool = False
+    granted_permissions: Tuple[str, ...] = ()
 
     def validate(self) -> None:
         _validate_safe_metadata({} if self.safe_metadata is None else self.safe_metadata)
         if any(marker in self.safe_message.lower() for marker in _SENSITIVE_KEYS):
             raise ConnectorError("connection-test message may expose sensitive material")
+        _validate_permissions(self.granted_permissions)
+        if self.granted_permissions and not self.permissions_authoritative:
+            raise ConnectorError("test permissions require an authoritative provider observation")
 
 
 class ConnectorProviderAdapter(Protocol):
@@ -147,9 +152,6 @@ class ConnectorActionService:
         if result.connected:
             current = self._registry.get(connector_id, project_id=project_id)
             assert current is not None
-            # Replace, never merge, provider permissions on each successful connection.
-            # This is fail-closed: an adapter that omits scopes cannot inherit stale
-            # privileges from an older authorization grant.
             self._registry.put(
                 replace(
                     current,
@@ -170,5 +172,18 @@ class ConnectorActionService:
         result.validate()
         current = self._registry.get(connector_id, project_id=project_id)
         assert current is not None
-        self._registry.put(replace(current, health=result.health, version=result.provider_version or current.version, provider_auth_version=result.provider_auth_version or current.provider_auth_version))
+        permissions = (
+            frozenset(result.granted_permissions)
+            if result.permissions_authoritative
+            else current.permissions
+        )
+        self._registry.put(
+            replace(
+                current,
+                health=result.health,
+                version=result.provider_version or current.version,
+                provider_auth_version=result.provider_auth_version or current.provider_auth_version,
+                permissions=permissions,
+            )
+        )
         return result
