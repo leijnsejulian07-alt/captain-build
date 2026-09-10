@@ -95,10 +95,47 @@ def main():
         lambda: ContextAssembler(MutableBackend()).assemble(request=a8, current_epoch=8)
     )
 
+    # A backend may legitimately return a plain dict. Captain must take its own
+    # immutable snapshot so provider/plugin code cannot mutate model context
+    # after authorization and budget checks have completed.
+    backend_payload = {"value": "before", "nested": {"flag": True}}
+
+    class FlatMutableBackend:
+        def list_readable(self, **_kwargs):
+            return [
+                MemoryContextRecord(
+                    record_id="snapshot",
+                    kind="memory",
+                    payload=backend_payload,
+                    scope=ScopedRecord(authority=a8),
+                )
+            ]
+
+    snapshot_bundle = ContextAssembler(FlatMutableBackend()).assemble(
+        request=a8, current_epoch=8
+    )
+    snapshot = snapshot_bundle.items[0].payload
+    backend_payload["value"] = "after"
+    backend_payload["nested"]["flag"] = False
+    assert snapshot["value"] == "before"
+    assert snapshot["nested"]["flag"] is True
+    try:
+        snapshot["value"] = "tampered"
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("model-facing payload must be immutable")
+    try:
+        snapshot["nested"]["flag"] = False
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("nested model-facing payload must be immutable")
+
     tiny = ContextAssembler(store, max_records=1)
     expect_denied(lambda: tiny.assemble(request=a8, current_epoch=8))
 
-    print("PASS: prompt context assembly is epoch-bound, scope-checked, and fail-closed")
+    print("PASS: prompt context assembly is epoch-bound, immutable, scope-checked, and fail-closed")
 
 
 if __name__ == "__main__":
