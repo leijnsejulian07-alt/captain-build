@@ -8,7 +8,7 @@ DB, vector store, model, or UI. Durable backends can implement the same contract
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .project_authority import (
     AuthorityError,
@@ -32,6 +32,9 @@ class MemoryContextRecord:
             raise AuthorityError("kind must be memory or context")
 
 
+AuthorityStorageKey = Tuple[Optional[str], Optional[str], Optional[str], Optional[int], str]
+
+
 class EpochBoundMemoryContextStore:
     """Fail-closed store for Captain memory/context records.
 
@@ -39,10 +42,26 @@ class EpochBoundMemoryContextStore:
     Project State epoch. Normal non-project chat remains supported, but project
     records never degrade to normal-chat/global visibility. Explicitly global,
     distilled, non-project-specific records can be read from project scope.
+
+    Record identity is authority-scoped rather than globally keyed by record_id.
+    This is important because otherwise an unrelated project, a later Project
+    State epoch, or normal chat could overwrite another scope's record merely by
+    choosing the same logical record id.
     """
 
     def __init__(self) -> None:
-        self._records: Dict[str, MemoryContextRecord] = {}
+        self._records: Dict[AuthorityStorageKey, MemoryContextRecord] = {}
+
+    @staticmethod
+    def _storage_key(authority: ProjectAuthority, record_id: str) -> AuthorityStorageKey:
+        authority.validate()
+        return (
+            authority.chat_id,
+            authority.project_id,
+            authority.repo_scope,
+            authority.state_epoch,
+            record_id,
+        )
 
     def put(
         self,
@@ -63,7 +82,8 @@ class EpochBoundMemoryContextStore:
             require_current_epoch(actor, current_epoch=current_epoch)
             actor.require_same_owner(record.scope.authority)
 
-        self._records[record.record_id] = record
+        key = self._storage_key(record.scope.authority, record.record_id)
+        self._records[key] = record
 
     def get(
         self,
@@ -73,10 +93,29 @@ class EpochBoundMemoryContextStore:
         current_epoch: Optional[int] = None,
     ) -> Optional[MemoryContextRecord]:
         self._validate_read_authority(request, current_epoch=current_epoch)
-        record = self._records.get(record_id)
-        if record is None or not record.scope.readable_by(request):
+        if not isinstance(record_id, str) or not record_id.strip():
+            raise AuthorityError("record_id must be a non-empty string")
+
+        # Exact-owner state always wins over generic global learning with the
+        # same logical id. Stale epochs and other projects cannot become a
+        # fallback because readable_by() remains the final fail-closed gate.
+        exact = self._records.get(self._storage_key(request, record_id))
+        if exact is not None and exact.scope.readable_by(request):
+            return exact
+
+        readable = [
+            record
+            for record in self._records.values()
+            if record.record_id == record_id and record.scope.readable_by(request)
+        ]
+        if not readable:
             return None
-        return record
+        if len(readable) > 1:
+            # Multiple readable fallback records with the same logical id are
+            # ambiguous. Refuse to guess rather than selecting cross-scope state
+            # by insertion order.
+            raise AuthorityError("ambiguous readable memory/context record_id")
+        return readable[0]
 
     def list_readable(
         self,
