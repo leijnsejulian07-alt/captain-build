@@ -7,7 +7,9 @@ DB, vector store, model, or UI. Durable backends can implement the same contract
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .project_authority import (
@@ -30,9 +32,55 @@ class MemoryContextRecord:
             raise AuthorityError("record_id must be a non-empty string")
         if self.kind not in {"memory", "context"}:
             raise AuthorityError("kind must be memory or context")
+        if not isinstance(self.payload, Mapping):
+            raise AuthorityError("payload must be a mapping")
 
 
 AuthorityStorageKey = Tuple[Optional[str], Optional[str], Optional[str], Optional[int], str]
+
+
+def _freeze_payload_value(value: object, *, path: str = "$") -> object:
+    """Create an immutable, deterministic snapshot without invoking deepcopy hooks.
+
+    Memory/context is an authority boundary. Holding caller-owned mutable objects
+    after a successful authorization check would let later code mutate persisted
+    state without passing through that check again. Restricting snapshots to
+    JSON-like builtins also avoids executing arbitrary ``__deepcopy__`` methods
+    from plugin/provider objects at this boundary.
+    """
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise AuthorityError(f"payload contains non-finite float at {path}")
+        return value
+    if type(value) is dict:
+        frozen: Dict[str, object] = {}
+        for key, nested in value.items():
+            if not isinstance(key, str) or not key:
+                raise AuthorityError(f"payload keys must be non-empty strings at {path}")
+            frozen[key] = _freeze_payload_value(nested, path=f"{path}.{key}")
+        return MappingProxyType(frozen)
+    if type(value) in {list, tuple}:
+        return tuple(
+            _freeze_payload_value(nested, path=f"{path}[{index}]")
+            for index, nested in enumerate(value)
+        )
+    raise AuthorityError(
+        f"payload contains unsupported mutable/custom value at {path}: {type(value).__name__}"
+    )
+
+
+def _snapshot_record(record: MemoryContextRecord) -> MemoryContextRecord:
+    payload = _freeze_payload_value(dict(record.payload))
+    assert isinstance(payload, Mapping)
+    return MemoryContextRecord(
+        record_id=record.record_id,
+        kind=record.kind,
+        payload=payload,
+        scope=record.scope,
+    )
 
 
 class EpochBoundMemoryContextStore:
@@ -47,6 +95,10 @@ class EpochBoundMemoryContextStore:
     This is important because otherwise an unrelated project, a later Project
     State epoch, or normal chat could overwrite another scope's record merely by
     choosing the same logical record id.
+
+    Payloads are snapshotted into immutable builtin containers at write time so
+    post-write caller mutation cannot alter stored memory outside authority
+    checks. Unsupported custom/mutable payload objects fail closed.
     """
 
     def __init__(self) -> None:
@@ -83,7 +135,7 @@ class EpochBoundMemoryContextStore:
             actor.require_same_owner(record.scope.authority)
 
         key = self._storage_key(record.scope.authority, record.record_id)
-        self._records[key] = record
+        self._records[key] = _snapshot_record(record)
 
     def get(
         self,
