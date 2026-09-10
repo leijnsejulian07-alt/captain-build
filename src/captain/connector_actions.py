@@ -97,6 +97,17 @@ class ConnectorActionService:
         self._setups[setup.connector_id] = setup
         self._adapters[setup.connector_id] = adapter
 
+    def registered_connector_ids(self) -> Tuple[str, ...]:
+        """Return the immutable public connector catalog without adapter internals."""
+        return tuple(sorted(self._setups))
+
+    def setup_for(self, connector_id: str) -> ConnectorSetupSpec:
+        """Expose only non-secret setup metadata needed by Captain Settings."""
+        setup = self._setups.get(connector_id)
+        if setup is None:
+            raise ConnectorError("connector adapter is not registered")
+        return setup
+
     def _parts(self, connector_id: str, project_id: Optional[str]) -> Tuple[ConnectorSetupSpec, ConnectorProviderAdapter]:
         setup, adapter = self._setups.get(connector_id), self._adapters.get(connector_id)
         if setup is None or adapter is None:
