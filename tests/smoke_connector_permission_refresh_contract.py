@@ -122,6 +122,29 @@ def main() -> None:
     assert unchanged is not None
     assert unchanged.permissions == frozenset({"repo:read", "issues:write"})
 
+    # Provider verdict and health must not contradict each other. Otherwise a failed
+    # check could leave Captain showing Ready=true or invalid auth as successful.
+    for connector_id, result in (
+        ("false-healthy", ConnectionTestResult(False, ConnectorHealth.HEALTHY, "Failed")),
+        ("true-auth-invalid", ConnectionTestResult(True, ConnectorHealth.AUTH_INVALID, "Connected")),
+    ):
+        registry.put(state(connector_id))
+        contradictory = service_for(registry, connector_id, result)
+        expect_error(lambda contradictory=contradictory, connector_id=connector_id: contradictory.test_connection(connector_id, project_id=None, user_initiated=True))
+        unchanged = registry.get(connector_id, project_id=None)
+        assert unchanged is not None
+        assert unchanged.health is ConnectorHealth.HEALTHY
+        assert unchanged.ready
+
+    # Empty diagnostics are not actionable in Settings and therefore fail closed.
+    registry.put(state("empty-message"))
+    empty_message = service_for(
+        registry,
+        "empty-message",
+        ConnectionTestResult(False, ConnectorHealth.DEGRADED, "   "),
+    )
+    expect_error(lambda: empty_message.test_connection("empty-message", project_id=None, user_initiated=True))
+
     print("CONNECTOR_PERMISSION_REFRESH_FAIL_CLOSED_PASS")
 
 
