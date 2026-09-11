@@ -89,6 +89,60 @@ class ContextBoundBuilder:
         self._starts[self._key(context.authority, session_id)] = start
         return start
 
+    def _adopt_rehydrated_session(
+        self,
+        *,
+        context: BuilderContextEnvelope,
+        session: BuilderResource,
+        current_epoch: int,
+    ) -> BuilderSessionStart:
+        """Register a fully staged restart session after re-proving Captain context.
+
+        This is intentionally package-private. Restart code must first build an
+        isolated lifecycle and validate all persisted phase/job state. This method
+        only issues the normal opaque session token after the canonical gateway
+        independently recreates the exact same context and the staged lifecycle
+        proves that the session and phase checkpoint are live.
+        """
+        if type(context) is not BuilderContextEnvelope or type(session) is not BuilderResource:
+            raise AuthorityError("rehydration requires canonical Captain session state")
+        authority = context.authority
+        authority.require_same_owner(session.authority)
+        require_current_epoch(authority, current_epoch=current_epoch)
+        if context.current_epoch != current_epoch:
+            raise AuthorityError("rehydrated builder context epoch is stale")
+        if session.resource_type != "session":
+            raise AuthorityError("rehydration requires a builder session resource")
+
+        fresh = self._gateway.for_builder(
+            request=authority,
+            current_epoch=current_epoch,
+            capabilities=context.capabilities,
+        )
+        if fresh != context:
+            raise AuthorityError("rehydrated builder context no longer matches Captain state")
+
+        stored = self._lifecycle.resources.get(
+            session.resource_id,
+            request=authority,
+            current_epoch=current_epoch,
+            resource_type="session",
+        )
+        if stored is None or stored != session:
+            raise AuthorityError("rehydrated builder session is not live in the staged lifecycle")
+        self._lifecycle.phases.export_state(
+            authority=authority,
+            session_id=session.resource_id,
+            current_epoch=current_epoch,
+        )
+
+        key = self._key(authority, session.resource_id)
+        if key in self._starts:
+            raise AuthorityError("rehydrated builder session token is already registered")
+        start = BuilderSessionStart(context=context, session=session)
+        self._starts[key] = start
+        return start
+
     def _require_start(
         self,
         start: BuilderSessionStart,
