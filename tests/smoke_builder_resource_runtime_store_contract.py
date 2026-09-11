@@ -98,25 +98,77 @@ def main() -> None:
         )
     )
 
-    # Resource IDs cannot be overwritten by another project/repo/chat/epoch.
+    # Provider-local resource IDs are authority-scoped rather than globally unique.
+    # Two unrelated projects may both legitimately have "preview-4" without either
+    # blocking or overwriting the other.
+    other_project = authority(project_id="project-b")
+    store.put(
+        BuilderResource("preview", "preview-4", other_project, {"project": "b"}),
+        actor=other_project,
+        current_epoch=7,
+    )
+    assert store.get("preview-4", request=owner, current_epoch=7).payload["safe"] is True
+    assert (
+        store.get("preview-4", request=other_project, current_epoch=7).payload["project"]
+        == "b"
+    )
+
+    # Stored payloads are immutable snapshots. Post-write mutation of an adapter's
+    # nested objects must not alter Captain-owned preview/session state.
+    nested = {"files": [{"path": "src/app.ts", "status": "clean"}]}
+    snap = BuilderResource("session", "mutable-session", owner, nested)
+    store.put(snap, actor=owner, current_epoch=7)
+    nested["files"][0]["status"] = "tampered"
+    stored = store.get("mutable-session", request=owner, current_epoch=7)
+    assert stored is not None
+    assert stored.payload["files"][0]["status"] == "clean"
+    try:
+        stored.payload["files"] = ()
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("stored builder payload must be read-only")
+
+    class HostilePayload:
+        def __deepcopy__(self, memo):
+            raise AssertionError("custom deepcopy hooks must never execute")
+
     denied(
         lambda: store.put(
-            resource("preview", "preview-4", authority(project_id="project-b")),
-            actor=authority(project_id="project-b"),
+            BuilderResource("session", "hostile", owner, {"value": HostilePayload()}),
+            actor=owner,
+            current_epoch=7,
+        )
+    )
+    denied(
+        lambda: store.put(
+            BuilderResource("session", "nan", owner, {"value": float("nan")}),
+            actor=owner,
             current_epoch=7,
         )
     )
 
-    # Epoch transition: stale resources are inaccessible before cleanup, and the
-    # active epoch can remove old resources without touching another project.
-    other = authority(project_id="project-b", state_epoch=8)
-    store.put(resource("preview", "other-preview", other), actor=other, current_epoch=8)
+    # Epoch transition: the new epoch may reuse a provider-local ID immediately;
+    # stale resources remain unreadable before cleanup and can then be reclaimed.
     next_owner = authority(state_epoch=8)
+    store.put(
+        BuilderResource("preview", "preview-4", next_owner, {"epoch": 8}),
+        actor=next_owner,
+        current_epoch=8,
+    )
     denied(lambda: store.get("preview-4", request=owner, current_epoch=8))
-    assert store.get("preview-4", request=next_owner, current_epoch=8) is None
+    assert store.get("preview-4", request=next_owner, current_epoch=8).payload["epoch"] == 8
+
+    other_epoch_project = authority(project_id="project-c", state_epoch=8)
+    store.put(
+        resource("preview", "other-preview", other_epoch_project),
+        actor=other_epoch_project,
+        current_epoch=8,
+    )
     removed = store.revoke_epoch(authority=next_owner, current_epoch=8)
-    assert removed == len(ALLOWED_BUILDER_RESOURCE_TYPES)
-    assert store.get("other-preview", request=other, current_epoch=8) is not None
+    assert removed == len(ALLOWED_BUILDER_RESOURCE_TYPES) + 1  # original set + mutable session
+    assert store.get("preview-4", request=next_owner, current_epoch=8) is not None
+    assert store.get("other-preview", request=other_epoch_project, current_epoch=8) is not None
 
     print("BUILDER_RESOURCE_RUNTIME_EPOCH_PASS")
 
