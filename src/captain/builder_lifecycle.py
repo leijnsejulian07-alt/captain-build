@@ -50,6 +50,15 @@ class BuilderLifecycleCoordinator:
         payload: Mapping[str, object],
     ) -> BuilderResource:
         self._validate_actor(actor, current_epoch=current_epoch)
+        existing = self.resources.get(
+            session_id,
+            request=actor,
+            current_epoch=current_epoch,
+            resource_type="session",
+        )
+        if existing is not None:
+            raise AuthorityError("builder session is already open")
+
         session = BuilderResource("session", session_id, actor, payload)
         self.resources.put(session, actor=actor, current_epoch=current_epoch)
         stored = self.resources.get(
