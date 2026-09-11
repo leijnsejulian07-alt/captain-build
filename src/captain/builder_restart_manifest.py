@@ -45,14 +45,15 @@ def context_digest(context: BuilderContextEnvelope) -> str:
         raise AuthorityError("restart manifest requires canonical builder context")
     context.authority.validate()
     require_current_epoch(context.authority, current_epoch=context.current_epoch)
-    items = []
-    for item in context.prompt_context.items:
-        items.append({
+    items = [
+        {
             "record_id": item.record_id,
             "kind": item.kind,
             "provenance": item.provenance,
             "payload": _plain(item.payload),
-        })
+        }
+        for item in context.prompt_context.items
+    ]
     payload = {
         "chat_id": context.authority.chat_id,
         "project_id": context.authority.project_id,
@@ -98,6 +99,35 @@ class BuilderRestartManifest:
         }
 
 
+def _validate_nested_checkpoints(
+    record: Mapping[str, object], *, authority: ProjectAuthority, current_epoch: int
+) -> None:
+    phase_state = record["phase_state"]
+    job_rows = record["jobs"]
+    if type(phase_state) is not dict or type(job_rows) is not list:
+        raise AuthorityError("restart manifest nested checkpoints are not canonical")
+    session_id = record["session_id"]
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise AuthorityError("restart manifest session_id is invalid")
+    if phase_state.get("session_id") != session_id:
+        raise AuthorityError("restart manifest phase checkpoint session mismatch")
+
+    phase_validator = BuilderPhaseStateMachine()
+    phase_validator.restore_state(
+        phase_state, authority=authority, current_epoch=current_epoch
+    )
+    job_validator = EpochBoundBuilderJobStore()
+    job_validator.restore_state(
+        job_rows, request=authority, current_epoch=current_epoch
+    )
+    attempted = set(phase_state["attempted"])
+    for row in job_rows:
+        if row["session_id"] != session_id:
+            raise AuthorityError("restart manifest job belongs to a different session")
+        if row["status"] != "queued" and row["phase"] not in attempted:
+            raise AuthorityError("durable builder job is inconsistent with phase checkpoint")
+
+
 def export_restart_manifest(
     *,
     session_id: str,
@@ -106,7 +136,7 @@ def export_restart_manifest(
     jobs: EpochBoundBuilderJobStore,
     current_epoch: int,
 ) -> BuilderRestartManifest:
-    """Atomically describe one live context/session using secret-free sub-checkpoints."""
+    """Describe one live context/session using secret-free sub-checkpoints."""
     if type(phases) is not BuilderPhaseStateMachine or type(jobs) is not EpochBoundBuilderJobStore:
         raise AuthorityError("restart manifest requires canonical Captain stores")
     authority = context.authority
@@ -141,7 +171,7 @@ def verify_restart_context(
     request: ProjectAuthority,
     current_epoch: int,
 ) -> BuilderContextEnvelope:
-    """Reassemble current Captain context and reject stale/forged restart manifests."""
+    """Reassemble context and fully validate a persisted restart manifest."""
     if type(gateway) is not RequestContextGateway:
         raise AuthorityError("restart verification requires canonical RequestContextGateway")
     if type(record) is not dict:
@@ -166,6 +196,7 @@ def verify_restart_context(
     digest = record["context_sha256"]
     if not isinstance(digest, str):
         raise AuthorityError("restart manifest context digest is invalid")
+    _validate_nested_checkpoints(record, authority=request, current_epoch=current_epoch)
     context = gateway.for_builder(
         request=request, current_epoch=current_epoch, capabilities=tuple(capabilities)
     )
