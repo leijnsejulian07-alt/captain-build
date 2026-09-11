@@ -15,6 +15,12 @@ def must_fail(callable_):
     raise AssertionError("expected fail-closed AuthorityError")
 
 
+def succeed(lifecycle, authority, session_id, action_id, phase):
+    receipt = BuilderActionReceipt(action_id, session_id, phase, "succeeded", authority, {})
+    lifecycle.record_action(receipt, actor=authority, current_epoch=authority.state_epoch)
+    return receipt
+
+
 def main() -> None:
     a7 = ProjectAuthority("chat-a", "project-a", "repo-a", 7)
     a8 = ProjectAuthority("chat-a", "project-a", "repo-a", 8)
@@ -25,8 +31,24 @@ def main() -> None:
     lifecycle.open_session("old", actor=a7, current_epoch=7, payload={"provider": "x"})
     lifecycle.open_session("s1", actor=a8, current_epoch=8, payload={"provider": "x"})
 
-    valid = BuilderActionReceipt("a1", "s1", "build", "running", a8, {"step": 1})
-    lifecycle.record_action(valid, actor=a8, current_epoch=8)
+    # Causal phase gates are enforced by Captain, not by the adapter.
+    premature = BuilderActionReceipt("too-soon", "s1", "build", "queued", a8, {})
+    must_fail(lambda: lifecycle.record_action(premature, actor=a8, current_epoch=8))
+    must_fail(
+        lambda: lifecycle.put_resource(
+            BuilderResource("preview", "early", a8, {"url": "http://invalid"}),
+            session_id="s1",
+            actor=a8,
+            current_epoch=8,
+        )
+    )
+
+    succeed(lifecycle, a8, "s1", "plan-1", "plan")
+    valid = succeed(lifecycle, a8, "s1", "build-1", "build")
+    succeed(lifecycle, a8, "s1", "test-1", "test")
+    succeed(lifecycle, a8, "s1", "review-1", "review")
+    succeed(lifecycle, a8, "s1", "preview-1", "preview")
+
     update = BuilderUpdate("u1", "s1", "status", 0, a8, {"message": "building"})
     assert lifecycle.publish_update(update, actor=a8, current_epoch=8) is True
     preview = BuilderResource("preview", "p1", a8, {"url": "http://127.0.0.1/preview"})
@@ -58,10 +80,11 @@ def main() -> None:
 
     removed = lifecycle.revoke_stale_epoch(authority=a8, current_epoch=8)
     assert removed["resources"] >= 1
+    assert removed["phases"] >= 1
     assert lifecycle.resources.get(
         "s1", request=a8, current_epoch=8, resource_type="session"
     ) is not None
-    assert lifecycle.actions.get("a1", request=a8, current_epoch=8) is not None
+    assert lifecycle.actions.get(valid.action_id, request=a8, current_epoch=8) is not None
     assert lifecycle.updates.list_readable(
         request=a8, current_epoch=8, session_id="s1"
     )[0].update_id == "u1"
