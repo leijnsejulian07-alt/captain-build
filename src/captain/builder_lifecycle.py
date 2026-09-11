@@ -3,7 +3,8 @@
 This coordinator composes the existing epoch-bound resource, action and update
 stores. Adapters should cross this boundary instead of publishing handles or
 results directly: every action/update/resource must belong to a live Captain
-session in the same chat/project/repository/Project-State epoch.
+session in the same chat/project/repository/Project-State epoch.  Builder phase
+ordering is also Captain-owned so adapters cannot skip verification gates.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 from typing import Mapping, Optional
 
 from .builder_action_receipts import BuilderActionReceipt, EpochBoundBuilderActionLedger
+from .builder_phase_machine import BuilderPhaseStateMachine
 from .builder_resource_store import BuilderResource, EpochBoundBuilderResourceStore
 from .builder_update_stream import BuilderUpdate, EpochBoundBuilderUpdateStream
 from .project_authority import AuthorityError, ProjectAuthority, require_current_epoch
@@ -25,10 +27,12 @@ class BuilderLifecycleCoordinator:
         resources: Optional[EpochBoundBuilderResourceStore] = None,
         actions: Optional[EpochBoundBuilderActionLedger] = None,
         updates: Optional[EpochBoundBuilderUpdateStream] = None,
+        phases: Optional[BuilderPhaseStateMachine] = None,
     ) -> None:
         self.resources = resources or EpochBoundBuilderResourceStore()
         self.actions = actions or EpochBoundBuilderActionLedger()
         self.updates = updates or EpochBoundBuilderUpdateStream()
+        self.phases = phases or BuilderPhaseStateMachine()
 
     @staticmethod
     def _validate_actor(actor: ProjectAuthority, *, current_epoch: int) -> None:
@@ -55,6 +59,7 @@ class BuilderLifecycleCoordinator:
             resource_type="session",
         )
         assert stored is not None
+        self.phases.open_session(authority=actor, session_id=session_id)
         return stored
 
     def _require_session(
@@ -84,7 +89,9 @@ class BuilderLifecycleCoordinator:
     ) -> None:
         actor.require_same_owner(receipt.authority)
         self._require_session(receipt.session_id, actor=actor, current_epoch=current_epoch)
+        self.phases.validate_receipt(receipt)
         self.actions.record(receipt, actor=actor, current_epoch=current_epoch)
+        self.phases.apply_receipt(receipt)
 
     def publish_update(
         self,
@@ -109,6 +116,11 @@ class BuilderLifecycleCoordinator:
             raise AuthorityError("session resources must be created through open_session")
         actor.require_same_owner(resource.authority)
         self._require_session(session_id, actor=actor, current_epoch=current_epoch)
+        self.phases.require_resource(
+            authority=actor,
+            session_id=session_id,
+            resource_type=resource.resource_type,
+        )
         self.resources.put(resource, actor=actor, current_epoch=current_epoch)
 
     def revoke_stale_epoch(
@@ -129,4 +141,5 @@ class BuilderLifecycleCoordinator:
             "updates": self.updates.revoke_epoch(
                 authority=authority, current_epoch=current_epoch
             ),
+            "phases": self.phases.revoke_epoch(authority=authority),
         }
