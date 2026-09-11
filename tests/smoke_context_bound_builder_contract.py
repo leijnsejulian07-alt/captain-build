@@ -32,6 +32,12 @@ def put(store, authority, record_id, value):
     )
 
 
+def record(builder, started, authority, action_id, phase, status="succeeded"):
+    receipt = BuilderActionReceipt(action_id, "s1", phase, status, authority, {})
+    builder.record_action(started, receipt, current_epoch=authority.state_epoch)
+    return receipt
+
+
 def main() -> None:
     store = EpochBoundMemoryContextStore()
     a7 = ProjectAuthority("chat-a", "project-a", "repo-a", 7)
@@ -58,9 +64,23 @@ def main() -> None:
     values = {item.payload["value"] for item in started.context.prompt_context.items}
     assert values == {"current"}
 
-    # Downstream work succeeds only through the exact Captain-issued session token.
-    action = BuilderActionReceipt("a1", "s1", "build", "running", a8, {"step": 1})
-    builder.record_action(started, action, current_epoch=8)
+    # Ownership and causal ordering are both Captain-owned.
+    premature = BuilderActionReceipt("too-soon", "s1", "build", "queued", a8, {})
+    must_fail(lambda: builder.record_action(started, premature, current_epoch=8))
+    must_fail(
+        lambda: builder.put_resource(
+            started,
+            BuilderResource("preview", "early", a8, {"url": "http://invalid"}),
+            current_epoch=8,
+        )
+    )
+
+    record(builder, started, a8, "plan-1", "plan")
+    action = record(builder, started, a8, "build-1", "build")
+    record(builder, started, a8, "test-1", "test")
+    record(builder, started, a8, "review-1", "review")
+    record(builder, started, a8, "preview-1", "preview")
+
     update = BuilderUpdate("u1", "s1", "status", 1, a8, {"message": "building"})
     assert builder.publish_update(started, update, current_epoch=8)
     preview = BuilderResource("preview", "p1", a8, {"url": "http://local.test"})
@@ -104,7 +124,7 @@ def main() -> None:
 
     must_fail(lambda: ContextBoundBuilder(gateway=gateway, lifecycle=FakeLifecycle()))
 
-    print("PASS: builder lifecycle is bound end-to-end to Captain-issued context tokens")
+    print("PASS: builder lifecycle is context-bound and phase-gated by Captain")
 
 
 if __name__ == "__main__":
