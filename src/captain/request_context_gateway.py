@@ -47,8 +47,12 @@ class RequestContextGateway:
     """
 
     def __init__(self, assembler: ContextAssembler) -> None:
-        if not isinstance(assembler, ContextAssembler):
-            raise AuthorityError("gateway requires Captain ContextAssembler")
+        # This is a security boundary, not an extension point. A subclass could
+        # override assemble() and smuggle unvalidated items into an otherwise
+        # correctly-scoped bundle. Provider/builder adapters belong downstream
+        # of this gateway and must not customize Captain's context assembler.
+        if type(assembler) is not ContextAssembler:
+            raise AuthorityError("gateway requires canonical Captain ContextAssembler")
         self._assembler = assembler
 
     def for_model(
@@ -119,7 +123,6 @@ class RequestContextGateway:
         request: ProjectAuthority,
         current_epoch: Optional[int],
     ) -> None:
-        """Defend against a compromised/custom assembler returning wrong scope."""
         if type(bundle) is not PromptContextBundle:
             raise AuthorityError("assembler returned invalid prompt context bundle")
         if bundle.authority != request:
