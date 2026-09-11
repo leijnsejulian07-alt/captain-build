@@ -9,7 +9,9 @@ therefore rejected instead of appearing in a newly selected project.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Dict, List, Mapping, Optional, Tuple
 
 from .project_authority import AuthorityError, ProjectAuthority, require_current_epoch
@@ -18,6 +20,33 @@ from .project_authority import AuthorityError, ProjectAuthority, require_current
 UPDATE_KINDS = frozenset(
     {"status", "console", "preview", "test", "review", "debug", "diff", "rollback", "artifact"}
 )
+BuilderUpdateKey = Tuple[str, str, str, int, str]
+
+
+def _freeze_payload_value(value: object, *, path: str = "$") -> object:
+    """Snapshot update payloads into immutable JSON-like builtin values."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise AuthorityError(f"builder update payload contains non-finite float at {path}")
+        return value
+    if type(value) is dict:
+        frozen: Dict[str, object] = {}
+        for key, nested in value.items():
+            if not isinstance(key, str) or not key:
+                raise AuthorityError(f"builder update payload keys must be non-empty strings at {path}")
+            frozen[key] = _freeze_payload_value(nested, path=f"{path}.{key}")
+        return MappingProxyType(frozen)
+    if type(value) in {list, tuple}:
+        return tuple(
+            _freeze_payload_value(nested, path=f"{path}[{index}]")
+            for index, nested in enumerate(value)
+        )
+    raise AuthorityError(
+        "builder update payload contains unsupported mutable/custom value "
+        f"at {path}: {type(value).__name__}"
+    )
 
 
 @dataclass(frozen=True)
@@ -40,7 +69,23 @@ class BuilderUpdate:
         self.authority.validate()
         if self.authority.is_normal_chat:
             raise AuthorityError("builder updates require complete project authority")
+        if type(self.payload) is not dict and not isinstance(self.payload, MappingProxyType):
+            raise AuthorityError("builder update payload must be a canonical mapping")
         return self
+
+
+def _snapshot_update(update: BuilderUpdate) -> BuilderUpdate:
+    update.validate()
+    payload = _freeze_payload_value(dict(update.payload))
+    assert isinstance(payload, Mapping)
+    return BuilderUpdate(
+        update_id=update.update_id,
+        session_id=update.session_id,
+        kind=update.kind,
+        sequence=update.sequence,
+        authority=update.authority,
+        payload=payload,
+    )
 
 
 class EpochBoundBuilderUpdateStream:
@@ -48,13 +93,34 @@ class EpochBoundBuilderUpdateStream:
 
     ``sequence`` is monotonic per (authority, session_id). Duplicate delivery of
     an identical update is idempotent; reusing an update_id with different
-    content or authority fails closed. Reads re-check the active Project State
-    epoch, so stale queued events cannot leak after a project transition.
+    content inside the same authority fails closed. Provider-local update IDs may
+    safely repeat across project/repository/epoch walls. Reads re-check the
+    active Project State epoch, so stale queued events cannot leak after a
+    project transition.
     """
 
     def __init__(self) -> None:
-        self._updates: Dict[str, BuilderUpdate] = {}
+        self._updates: Dict[BuilderUpdateKey, BuilderUpdate] = {}
         self._last_sequence: Dict[Tuple[ProjectAuthority, str], int] = {}
+
+    @staticmethod
+    def _storage_key(authority: ProjectAuthority, update_id: str) -> BuilderUpdateKey:
+        authority.validate()
+        if authority.is_normal_chat:
+            raise AuthorityError("normal chat cannot own builder updates")
+        if not isinstance(update_id, str) or not update_id.strip():
+            raise AuthorityError("builder update requires a non-empty update_id")
+        assert authority.chat_id is not None
+        assert authority.project_id is not None
+        assert authority.repo_scope is not None
+        assert authority.state_epoch is not None
+        return (
+            authority.chat_id,
+            authority.project_id,
+            authority.repo_scope,
+            authority.state_epoch,
+            update_id,
+        )
 
     def publish(
         self,
@@ -68,11 +134,11 @@ class EpochBoundBuilderUpdateStream:
         update.validate()
         actor.require_same_owner(update.authority)
 
-        existing = self._updates.get(update.update_id)
+        key = self._storage_key(actor, update.update_id)
+        existing = self._updates.get(key)
         if existing is not None:
-            if not existing.authority.same_owner(actor):
-                raise AuthorityError("builder update_id collision across authority wall")
-            if existing != update:
+            candidate = _snapshot_update(update)
+            if existing != candidate:
                 raise AuthorityError("builder update identity/content is immutable")
             return False
 
@@ -81,7 +147,7 @@ class EpochBoundBuilderUpdateStream:
         if update.sequence <= last_sequence:
             raise AuthorityError("builder update sequence must increase monotonically per session")
 
-        self._updates[update.update_id] = update
+        self._updates[key] = _snapshot_update(update)
         self._last_sequence[stream_key] = update.sequence
         return True
 
@@ -121,8 +187,8 @@ class EpochBoundBuilderUpdateStream:
         """
         self._validate_actor(authority, current_epoch=current_epoch)
         doomed = [
-            update_id
-            for update_id, update in self._updates.items()
+            key
+            for key, update in self._updates.items()
             if (
                 update.authority.chat_id == authority.chat_id
                 and update.authority.project_id == authority.project_id
@@ -130,8 +196,8 @@ class EpochBoundBuilderUpdateStream:
                 and update.authority.state_epoch != authority.state_epoch
             )
         ]
-        for update_id in doomed:
-            del self._updates[update_id]
+        for key in doomed:
+            del self._updates[key]
 
         for stream_key in list(self._last_sequence):
             owner, _session_id = stream_key
