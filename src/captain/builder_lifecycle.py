@@ -1,10 +1,11 @@
 """Captain-owned lifecycle boundary for OpenBuilder sessions and outputs.
 
-This coordinator composes the existing epoch-bound resource, action and update
-stores. Adapters should cross this boundary instead of publishing handles or
-results directly: every action/update/resource must belong to a live Captain
-session in the same chat/project/repository/Project-State epoch.  Builder phase
-ordering is also Captain-owned so adapters cannot skip verification gates.
+This coordinator composes the existing epoch-bound resource, action, update and
+background-job stores. Adapters should cross this boundary instead of publishing
+handles or results directly: every action/update/resource/job must belong to a
+live Captain session in the same chat/project/repository/Project-State epoch.
+Builder phase ordering is also Captain-owned so adapters cannot skip verification
+gates or resume durable work under a different authority/session.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 from typing import Mapping, Optional
 
 from .builder_action_receipts import BuilderActionReceipt, EpochBoundBuilderActionLedger
+from .builder_job_recovery import BuilderJobCheckpoint, EpochBoundBuilderJobStore
 from .builder_phase_machine import BuilderPhaseStateMachine
 from .builder_resource_store import BuilderResource, EpochBoundBuilderResourceStore
 from .builder_update_stream import BuilderUpdate, EpochBoundBuilderUpdateStream
@@ -28,11 +30,13 @@ class BuilderLifecycleCoordinator:
         actions: Optional[EpochBoundBuilderActionLedger] = None,
         updates: Optional[EpochBoundBuilderUpdateStream] = None,
         phases: Optional[BuilderPhaseStateMachine] = None,
+        jobs: Optional[EpochBoundBuilderJobStore] = None,
     ) -> None:
         self.resources = resources or EpochBoundBuilderResourceStore()
         self.actions = actions or EpochBoundBuilderActionLedger()
         self.updates = updates or EpochBoundBuilderUpdateStream()
         self.phases = phases or BuilderPhaseStateMachine()
+        self.jobs = jobs or EpochBoundBuilderJobStore()
 
     @staticmethod
     def _validate_actor(actor: ProjectAuthority, *, current_epoch: int) -> None:
@@ -132,6 +136,45 @@ class BuilderLifecycleCoordinator:
         )
         self.resources.put(resource, actor=actor, current_epoch=current_epoch)
 
+    def checkpoint_job(
+        self,
+        checkpoint: BuilderJobCheckpoint,
+        *,
+        actor: ProjectAuthority,
+        current_epoch: int,
+    ) -> BuilderJobCheckpoint:
+        """Persist job progress only for a live session under the exact authority."""
+        actor.require_same_owner(checkpoint.authority)
+        self._require_session(checkpoint.session_id, actor=actor, current_epoch=current_epoch)
+        return self.jobs.put(checkpoint, actor=actor, current_epoch=current_epoch)
+
+    def resume_job(
+        self,
+        job_id: str,
+        *,
+        actor: ProjectAuthority,
+        current_epoch: int,
+    ) -> BuilderJobCheckpoint:
+        """Explicitly resume durable work after re-validating its owning session."""
+        checkpoint = self.jobs.get(job_id, request=actor, current_epoch=current_epoch)
+        if checkpoint is None:
+            raise AuthorityError("unknown builder job")
+        self._require_session(checkpoint.session_id, actor=actor, current_epoch=current_epoch)
+        return self.jobs.resume(job_id, request=actor, current_epoch=current_epoch)
+
+    def recover_interrupted_jobs(
+        self,
+        *,
+        actor: ProjectAuthority,
+        current_epoch: int,
+    ) -> int:
+        """On restart, pause crash-left running jobs; never auto-resume them."""
+        self._validate_actor(actor, current_epoch=current_epoch)
+        return self.jobs.recover_interrupted(
+            authority=actor,
+            current_epoch=current_epoch,
+        )
+
     def revoke_stale_epoch(
         self,
         *,
@@ -151,4 +194,7 @@ class BuilderLifecycleCoordinator:
                 authority=authority, current_epoch=current_epoch
             ),
             "phases": self.phases.revoke_epoch(authority=authority),
+            "jobs": self.jobs.revoke_epoch(
+                authority=authority, current_epoch=current_epoch
+            ),
         }
