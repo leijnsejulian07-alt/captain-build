@@ -9,14 +9,54 @@ epoch wall after a project switch or state transition.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional
+from types import MappingProxyType
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from .project_authority import AuthorityError, ProjectAuthority, require_current_epoch
 
 
 FINAL_ACTION_STATUSES = frozenset({"succeeded", "failed", "cancelled", "rolled_back"})
 ACTION_STATUSES = frozenset({"queued", "running", *FINAL_ACTION_STATUSES})
+_ALLOWED_TRANSITIONS = {
+    "queued": frozenset({"queued", "running", "succeeded", "failed", "cancelled"}),
+    "running": frozenset({"running", "succeeded", "failed", "cancelled", "rolled_back"}),
+    "succeeded": frozenset({"succeeded"}),
+    "failed": frozenset({"failed"}),
+    "cancelled": frozenset({"cancelled"}),
+    "rolled_back": frozenset({"rolled_back"}),
+}
+
+BuilderActionKey = Tuple[str, str, str, int, str]
+
+
+def _freeze_payload_value(value: object, *, path: str = "$") -> object:
+    """Snapshot receipt payloads into immutable JSON-like builtin values."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise AuthorityError(f"builder receipt payload contains non-finite float at {path}")
+        return value
+    if type(value) is dict:
+        frozen: Dict[str, object] = {}
+        for key, nested in value.items():
+            if not isinstance(key, str) or not key:
+                raise AuthorityError(
+                    f"builder receipt payload keys must be non-empty strings at {path}"
+                )
+            frozen[key] = _freeze_payload_value(nested, path=f"{path}.{key}")
+        return MappingProxyType(frozen)
+    if type(value) in {list, tuple}:
+        return tuple(
+            _freeze_payload_value(nested, path=f"{path}[{index}]")
+            for index, nested in enumerate(value)
+        )
+    raise AuthorityError(
+        "builder receipt payload contains unsupported mutable/custom value "
+        f"at {path}: {type(value).__name__}"
+    )
 
 
 @dataclass(frozen=True)
@@ -41,14 +81,49 @@ class BuilderActionReceipt:
         self.authority.validate()
         if self.authority.is_normal_chat:
             raise AuthorityError("builder action receipts require complete project authority")
+        if type(self.payload) is not dict and not isinstance(self.payload, MappingProxyType):
+            raise AuthorityError("builder receipt payload must be a canonical mapping")
         return self
+
+
+def _snapshot_receipt(receipt: BuilderActionReceipt) -> BuilderActionReceipt:
+    receipt.validate()
+    payload = _freeze_payload_value(dict(receipt.payload))
+    assert isinstance(payload, Mapping)
+    return BuilderActionReceipt(
+        action_id=receipt.action_id,
+        session_id=receipt.session_id,
+        action_type=receipt.action_type,
+        status=receipt.status,
+        authority=receipt.authority,
+        payload=payload,
+    )
 
 
 class EpochBoundBuilderActionLedger:
     """Captain-owned receipt ledger for builder actions and delayed results."""
 
     def __init__(self) -> None:
-        self._receipts: Dict[str, BuilderActionReceipt] = {}
+        self._receipts: Dict[BuilderActionKey, BuilderActionReceipt] = {}
+
+    @staticmethod
+    def _storage_key(authority: ProjectAuthority, action_id: str) -> BuilderActionKey:
+        authority.validate()
+        if authority.is_normal_chat:
+            raise AuthorityError("normal chat cannot own builder action receipts")
+        if not isinstance(action_id, str) or not action_id.strip():
+            raise AuthorityError("builder receipt requires a non-empty action_id")
+        assert authority.chat_id is not None
+        assert authority.project_id is not None
+        assert authority.repo_scope is not None
+        assert authority.state_epoch is not None
+        return (
+            authority.chat_id,
+            authority.project_id,
+            authority.repo_scope,
+            authority.state_epoch,
+            action_id,
+        )
 
     def record(
         self,
@@ -61,16 +136,17 @@ class EpochBoundBuilderActionLedger:
         receipt.validate()
         actor.require_same_owner(receipt.authority)
 
-        existing = self._receipts.get(receipt.action_id)
+        key = self._storage_key(actor, receipt.action_id)
+        existing = self._receipts.get(key)
         if existing is not None:
-            if not existing.authority.same_owner(actor):
-                raise AuthorityError("builder action_id collision across authority wall")
             if existing.session_id != receipt.session_id or existing.action_type != receipt.action_type:
                 raise AuthorityError("builder action identity cannot change after creation")
-            if existing.status in FINAL_ACTION_STATUSES and receipt.status != existing.status:
-                raise AuthorityError("final builder action receipt cannot be reopened or rewritten")
+            if receipt.status not in _ALLOWED_TRANSITIONS[existing.status]:
+                raise AuthorityError(
+                    f"invalid builder action status transition: {existing.status} -> {receipt.status}"
+                )
 
-        self._receipts[receipt.action_id] = receipt
+        self._receipts[key] = _snapshot_receipt(receipt)
 
     def get(
         self,
@@ -80,12 +156,12 @@ class EpochBoundBuilderActionLedger:
         current_epoch: int,
     ) -> Optional[BuilderActionReceipt]:
         self._validate_actor(request, current_epoch=current_epoch)
-        receipt = self._receipts.get(action_id)
+        receipt = self._receipts.get(self._storage_key(request, action_id))
         if receipt is None:
             return None
         receipt.validate()
         if not receipt.authority.same_owner(request):
-            return None
+            raise AuthorityError("builder action storage key/authority mismatch")
         return receipt
 
     def list_readable(
@@ -118,8 +194,8 @@ class EpochBoundBuilderActionLedger:
         """
         self._validate_actor(authority, current_epoch=current_epoch)
         doomed = [
-            action_id
-            for action_id, receipt in self._receipts.items()
+            key
+            for key, receipt in self._receipts.items()
             if (
                 receipt.authority.chat_id == authority.chat_id
                 and receipt.authority.project_id == authority.project_id
@@ -127,8 +203,8 @@ class EpochBoundBuilderActionLedger:
                 and receipt.authority.state_epoch != authority.state_epoch
             )
         ]
-        for action_id in doomed:
-            del self._receipts[action_id]
+        for key in doomed:
+            del self._receipts[key]
         return len(doomed)
 
     @staticmethod
