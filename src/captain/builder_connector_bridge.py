@@ -1,20 +1,23 @@
 """Bridge recovered builder provider state into Captain's canonical Connector Settings.
 
 The bridge is intentionally thin: it does not authenticate providers, own credentials,
-resume jobs, or create another notification system.  It only projects the already
-validated BuilderStartupRegistry reconnect state into the existing project-scoped
-ConnectorSettingsRegistry health/remediation surface.
+resume jobs without Settings approval, or create another notification system. It only
+projects the already validated BuilderStartupRegistry reconnect state into the existing
+project-scoped ConnectorSettingsRegistry health/remediation surface.
 
 A builder session must be explicitly bound to an already-registered project connector.
 The bridge never invents authentication, marks a disconnected connector connected, or
-activates a paid connector.  Severe provider health states reported by Settings
+activates a paid connector. Severe provider health states reported by Settings
 (auth-invalid/deprecated/migration-required) are never masked by generic builder state.
+Recovered job resume is exposed here as the canonical UI/control-surface path so both
+provider reconnect state and Connector Settings readiness are required.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
+from .builder_job_recovery import BuilderJobCheckpoint
 from .builder_startup_registry import BuilderStartupRegistry
 from .connector_settings import (
     ConnectorError,
@@ -199,3 +202,36 @@ class BuilderConnectorBridge:
             blocker=blocker,
         )
         return self.sync(session_id, request=request, current_epoch=current_epoch)
+
+    def resume_job(
+        self,
+        session_id: str,
+        job_id: str,
+        *,
+        request: ProjectAuthority,
+        current_epoch: int,
+    ) -> BuilderJobCheckpoint:
+        """Resume recovered work only when provider and canonical Settings are Ready.
+
+        This is the UI/control-surface resume path. It deliberately re-syncs immediately
+        before mutation so an expired credential, disabled connector, provider migration,
+        or reconnect regression cannot race a stale previously-ready snapshot.
+        """
+        status = self.sync(
+            session_id,
+            request=request,
+            current_epoch=current_epoch,
+        )
+        if not status.resume_allowed:
+            raise AuthorityError(
+                "builder job resume requires provider reconnect and Ready Connector Settings"
+            )
+        checkpoint = self._startup.resume_job(
+            session_id,
+            job_id,
+            request=request,
+            current_epoch=current_epoch,
+        )
+        if checkpoint.session_id != session_id:
+            raise AuthorityError("resumed builder job changed session ownership")
+        return checkpoint
