@@ -143,6 +143,11 @@ def main() -> None:
     assert len(notices_b) == 1
     assert notices_b[0].settings_deep_link == "settings://connectors/generic-builder-provider"
     assert "never-persist" not in repr(blocked.safe_payload())
+    must_fail(
+        lambda: bridge.resume_job(
+            "same-provider-session", "job-b", request=b, current_epoch=8
+        )
+    )
 
     # Successful reconnect clears the same canonical notice and permits resume UX.
     ready_b = bridge.set_reconnect_status(
@@ -152,6 +157,12 @@ def main() -> None:
     assert ready_b.connector_ready
     assert ready_b.resume_allowed
     assert settings.visible_notices(project_id="project-b", now=100.0) == ()
+    resumed_b = bridge.resume_job(
+        "same-provider-session", "job-b", request=b, current_epoch=8
+    )
+    assert resumed_b.status == "running"
+    assert resumed_b.attempt == 2
+    assert resumed_b.sequence >= 4
 
     # Specific Settings health failures are never hidden by generic builder-ready state.
     settings.update_health(
@@ -166,6 +177,11 @@ def main() -> None:
     assert not ready_a.connector_ready
     assert not ready_a.resume_allowed
     assert len(settings.visible_notices(project_id="project-a", now=100.0)) == 1
+    must_fail(
+        lambda: bridge.resume_job(
+            "same-provider-session", "job-a", request=a, current_epoch=8
+        )
+    )
 
     # Cross-project/repo/epoch and normal-chat paths fail closed.
     must_fail(
@@ -187,7 +203,7 @@ def main() -> None:
         )
     )
 
-    print("PASS: builder reconnect state is project-safe in canonical Connector Settings")
+    print("PASS: builder reconnect and job resume are project-safe in canonical Connector Settings")
 
 
 if __name__ == "__main__":
