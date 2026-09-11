@@ -13,7 +13,7 @@ silently forgetting which verification gates actually succeeded.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Mapping, Optional, Set, Tuple
+from typing import Dict, Mapping, Optional, Set, Tuple
 
 from .builder_action_receipts import BuilderActionReceipt
 from .project_authority import AuthorityError, ProjectAuthority, require_current_epoch
@@ -78,6 +78,26 @@ class BuilderPhaseStateMachine:
             raise AuthorityError("restored builder phase state has unknown attempted phase")
         if not state.completed.issubset(state.attempted):
             raise AuthorityError("completed builder phases must have been attempted")
+
+        # A persisted checkpoint is untrusted input. Re-prove the same causal
+        # gates the live state machine enforces instead of accepting a caller's
+        # claim that a later phase succeeded.
+        if "build" in state.completed and "plan" not in state.completed:
+            raise AuthorityError("restored build success requires succeeded plan")
+        if "test" in state.completed and "build" not in state.completed:
+            raise AuthorityError("restored test success requires succeeded build")
+        if "review" in state.completed and "test" not in state.completed:
+            raise AuthorityError("restored review success requires succeeded tests")
+        if "preview" in state.completed and "review" not in state.completed:
+            raise AuthorityError("restored preview success requires succeeded review")
+        if "rollback" in state.completed:
+            if "build" not in state.attempted:
+                raise AuthorityError("restored rollback requires a previously attempted build")
+            if state.completed.intersection({"build", "test", "review", "debug", "preview"}):
+                raise AuthorityError("restored rollback state contains invalidated build phases")
+        if "debug" in state.completed and not state.attempted.intersection(_FAILED_PHASES):
+            raise AuthorityError("restored debug requires a prior failed-phase attempt")
+
         if state.failed_phase is not None:
             if state.failed_phase not in _FAILED_PHASES:
                 raise AuthorityError("restored builder phase state has invalid failed phase")
@@ -177,11 +197,9 @@ class BuilderPhaseStateMachine:
             if state.failed_phase == "review":
                 state.failed_phase = None
         elif phase == "debug":
-            # Code changed during debugging; force the normal verification gates again.
             state.completed.difference_update({"test", "review", "preview"})
             state.failed_phase = None
         elif phase == "rollback":
-            # The previous build is no longer the live candidate after rollback.
             state.completed.difference_update({"build", "test", "review", "debug", "preview"})
             state.failed_phase = None
 
