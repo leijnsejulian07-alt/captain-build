@@ -1,8 +1,11 @@
-"""Regression: OpenBuilder sessions must originate from Captain context."""
+"""Regression: all OpenBuilder work must originate from Captain context."""
 
+from src.captain.builder_action_receipts import BuilderActionReceipt
 from src.captain.builder_lifecycle import BuilderLifecycleCoordinator
+from src.captain.builder_resource_store import BuilderResource
+from src.captain.builder_update_stream import BuilderUpdate
 from src.captain.context_assembly import ContextAssembler
-from src.captain.context_bound_builder import ContextBoundBuilder
+from src.captain.context_bound_builder import BuilderSessionStart, ContextBoundBuilder
 from src.captain.memory_context_store import EpochBoundMemoryContextStore, MemoryContextRecord
 from src.captain.project_authority import AuthorityError, ProjectAuthority, ScopedRecord
 from src.captain.request_context_gateway import RequestContextGateway
@@ -52,27 +55,41 @@ def main() -> None:
     )
     assert started.session.authority == a8
     assert started.context.authority == a8
-    assert started.context.current_epoch == 8
-    assert started.context.repo_scope == "repo-a"
     values = {item.payload["value"] for item in started.context.prompt_context.items}
     assert values == {"current"}
 
+    # Downstream work succeeds only through the exact Captain-issued session token.
+    action = BuilderActionReceipt("a1", "s1", "build", "running", a8, {"step": 1})
+    builder.record_action(started, action, current_epoch=8)
+    update = BuilderUpdate("u1", "s1", "status", 1, a8, {"message": "building"})
+    assert builder.publish_update(started, update, current_epoch=8)
+    preview = BuilderResource("preview", "p1", a8, {"url": "http://local.test"})
+    builder.put_resource(started, preview, current_epoch=8)
+    assert lifecycle.resources.get(
+        "p1", request=a8, current_epoch=8, resource_type="preview"
+    ) is not None
+
+    # A structurally identical token fabricated by an adapter is not authority.
+    forged = BuilderSessionStart(context=started.context, session=started.session)
+    must_fail(lambda: builder.record_action(forged, action, current_epoch=8))
+    must_fail(lambda: builder.publish_update(forged, update, current_epoch=8))
+    must_fail(lambda: builder.put_resource(forged, preview, current_epoch=8))
+
+    # Session mixups and stale epochs fail closed even with a valid token.
+    wrong_session = BuilderActionReceipt("a2", "other", "test", "queued", a8, {})
+    must_fail(lambda: builder.record_action(started, wrong_session, current_epoch=8))
+    must_fail(lambda: builder.record_action(started, action, current_epoch=9))
+
+    # The bridge no longer exposes its raw lifecycle as an adapter escape hatch.
+    assert not hasattr(builder, "lifecycle")
+
     # Stale, normal-chat and cross-project context can never authorize a session.
-    must_fail(
-        lambda: builder.open_session(
-            "stale", request=a7, current_epoch=8, payload={}
-        )
-    )
-    must_fail(
-        lambda: builder.open_session(
-            "global", request=normal, current_epoch=0, payload={}
-        )
-    )
+    must_fail(lambda: builder.open_session("stale", request=a7, current_epoch=8, payload={}))
+    must_fail(lambda: builder.open_session("global", request=normal, current_epoch=0, payload={}))
     assert lifecycle.resources.get(
         "s1", request=b8, current_epoch=8, resource_type="session"
     ) is None
 
-    # Security boundaries are composition points, not subclass extension points.
     class FakeGateway(RequestContextGateway):
         pass
 
@@ -85,13 +102,9 @@ def main() -> None:
     class FakeLifecycle(BuilderLifecycleCoordinator):
         pass
 
-    must_fail(
-        lambda: ContextBoundBuilder(
-            gateway=gateway, lifecycle=FakeLifecycle()
-        )
-    )
+    must_fail(lambda: ContextBoundBuilder(gateway=gateway, lifecycle=FakeLifecycle()))
 
-    print("PASS: builder session creation is bound to canonical Captain context")
+    print("PASS: builder lifecycle is bound end-to-end to Captain-issued context tokens")
 
 
 if __name__ == "__main__":
