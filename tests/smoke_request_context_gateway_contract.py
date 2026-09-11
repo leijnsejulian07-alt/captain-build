@@ -1,4 +1,4 @@
-from src.captain.context_assembly import ContextAssembler, PromptContextBundle
+from src.captain.context_assembly import ContextAssembler
 from src.captain.memory_context_store import EpochBoundMemoryContextStore, MemoryContextRecord
 from src.captain.project_authority import AuthorityError, ProjectAuthority, ScopedRecord
 from src.captain.request_context_gateway import RequestContextGateway
@@ -101,17 +101,15 @@ def main():
         )
     )
 
-    # Even a ContextAssembler subclass cannot trick the gateway into returning
-    # a bundle for another project or epoch.
+    # Context assembly is a security boundary, not a plugin extension point.
+    # A subclass could override assemble() and manufacture a same-authority
+    # bundle containing unvalidated records, so the gateway accepts only the
+    # canonical Captain implementation.
     class CompromisedAssembler(ContextAssembler):
         def assemble(self, **_kwargs):
-            return PromptContextBundle(authority=b8, current_epoch=8, items=())
+            raise AssertionError("custom assembler must never execute")
 
-    compromised = RequestContextGateway(CompromisedAssembler(store))
-    expect_denied(lambda: compromised.for_model(request=a8, current_epoch=8))
-    expect_denied(
-        lambda: compromised.for_builder(request=a8, current_epoch=8)
-    )
+    expect_denied(lambda: RequestContextGateway(CompromisedAssembler(store)))
 
     print(
         "PASS: model and OpenBuilder context share one Captain-owned epoch-bound gateway"
