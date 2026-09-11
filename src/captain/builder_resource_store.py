@@ -28,7 +28,7 @@ ALLOWED_BUILDER_RESOURCE_TYPES = frozenset(
     }
 )
 
-BuilderResourceKey = Tuple[str, str, str, int, str]
+BuilderResourceKey = Tuple[str, str, str, int, str, str]
 
 
 def _freeze_payload_value(value: object, *, path: str = "$") -> object:
@@ -105,19 +105,27 @@ class EpochBoundBuilderResourceStore:
     boundary that adapters/subsystems must cross before Captain exposes a
     session, preview, console stream, diff, rollback point, context, or update.
 
-    Resource identity is authority-scoped. Different projects and Project State
-    epochs may legitimately reuse provider-local IDs such as ``session-1`` or
-    ``preview`` without blocking or overwriting one another.
+    Resource identity is authority- and type-scoped. Different projects, Project
+    State epochs, and resource kinds may legitimately reuse provider-local IDs
+    such as ``1`` or ``current`` without blocking or overwriting one another.
     """
 
     def __init__(self) -> None:
         self._resources: Dict[BuilderResourceKey, BuilderResource] = {}
 
     @staticmethod
-    def _storage_key(authority: ProjectAuthority, resource_id: str) -> BuilderResourceKey:
+    def _storage_key(
+        authority: ProjectAuthority,
+        resource_type: str,
+        resource_id: str,
+    ) -> BuilderResourceKey:
         authority.validate()
         if authority.is_normal_chat:
             raise AuthorityError("normal chat cannot own builder resources")
+        if resource_type not in ALLOWED_BUILDER_RESOURCE_TYPES:
+            raise AuthorityError("unknown builder resource type must fail closed")
+        if not isinstance(resource_id, str) or not resource_id.strip():
+            raise AuthorityError("builder resource requires a non-empty resource_id")
         assert authority.chat_id is not None
         assert authority.project_id is not None
         assert authority.repo_scope is not None
@@ -127,6 +135,7 @@ class EpochBoundBuilderResourceStore:
             authority.project_id,
             authority.repo_scope,
             authority.state_epoch,
+            resource_type,
             resource_id,
         )
 
@@ -145,7 +154,7 @@ class EpochBoundBuilderResourceStore:
         actor.require_same_owner(resource.authority)
 
         snapshot = _snapshot_resource(resource)
-        key = self._storage_key(actor, resource.resource_id)
+        key = self._storage_key(actor, resource.resource_type, resource.resource_id)
         self._resources[key] = snapshot
 
     def get(
@@ -157,18 +166,36 @@ class EpochBoundBuilderResourceStore:
         resource_type: Optional[str] = None,
     ) -> Optional[BuilderResource]:
         self._validate_request(request, current_epoch=current_epoch)
+        if not isinstance(resource_id, str) or not resource_id.strip():
+            raise AuthorityError("builder resource requires a non-empty resource_id")
         if resource_type is not None and resource_type not in ALLOWED_BUILDER_RESOURCE_TYPES:
             raise AuthorityError("unknown builder resource type must fail closed")
 
-        resource = self._resources.get(self._storage_key(request, resource_id))
-        if resource is None:
+        if resource_type is not None:
+            resource = self._resources.get(
+                self._storage_key(request, resource_type, resource_id)
+            )
+            if resource is None:
+                return None
+            resource.validate()
+            if not resource.authority.same_owner(request):
+                raise AuthorityError("builder resource storage key/authority mismatch")
+            return resource
+
+        matches = [
+            resource
+            for resource in self._resources.values()
+            if resource.resource_id == resource_id
+            and resource.authority.same_owner(request)
+        ]
+        if not matches:
             return None
-        resource.validate()
-        if resource_type is not None and resource.resource_type != resource_type:
-            return None
-        if not resource.authority.same_owner(request):
-            raise AuthorityError("builder resource storage key/authority mismatch")
-        return resource
+        if len(matches) > 1:
+            raise AuthorityError(
+                "ambiguous builder resource_id requires explicit resource_type"
+            )
+        matches[0].validate()
+        return matches[0]
 
     def list_readable(
         self,
