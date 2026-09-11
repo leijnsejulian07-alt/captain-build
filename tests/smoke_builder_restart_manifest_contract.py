@@ -69,6 +69,24 @@ def main() -> None:
     assert "original" not in repr(payload)
     assert payload["jobs"][0]["job_id"] == "job-1"
 
+    # Nested checkpoint records are untrusted persistence input too.
+    forged_phase = dict(payload)
+    forged_phase["phase_state"] = dict(payload["phase_state"])
+    forged_phase["phase_state"]["session_id"] = "other-session"
+    must_fail(
+        lambda: verify_restart_context(
+            forged_phase, gateway=gateway, request=authority, current_epoch=8
+        )
+    )
+    forged_job = dict(payload)
+    forged_job["jobs"] = [dict(payload["jobs"][0])]
+    forged_job["jobs"][0]["session_id"] = "other-session"
+    must_fail(
+        lambda: verify_restart_context(
+            forged_job, gateway=gateway, request=authority, current_epoch=8
+        )
+    )
+
     # Context changed within the same epoch: never silently resume against it.
     put(store, authority, "m2", "new-context")
     must_fail(
