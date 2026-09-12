@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout exact revision
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           fetch-depth: 1
@@ -33,7 +33,17 @@ jobs:
       - name: Install test runner only
         run: python3 -m pip install --disable-pip-version-check --no-input pytest
 
-      - name: Run fallback regressions
+      - name: Run offline-safe fallback regressions
         env:
           PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 -m pytest -q fallback parking
+        run: >-
+          python3 -m pytest -q
+          fallback/Sandbox
+          fallback/Settings
+          fallback/Memory
+          parking
+
+      - name: Record live-runtime-only checks
+        run: |
+          echo 'Deferred locally: fallback/Router/test_scope_pair_http.py requires the Captain HTTP runtime.'
+          echo 'Run it with Doctor/router/OpenBuilder regressions when the authorized laptop is reachable.'
