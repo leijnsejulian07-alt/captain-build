@@ -42,6 +42,7 @@ jobs:
           fallback/Settings
           fallback/Memory
           fallback/Research
+          fallback/Integration
           parking
 
       - name: Record live-runtime-only checks
