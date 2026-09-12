@@ -73,7 +73,7 @@ def project_builder_pane(
     can_promote = (
         execution.phase == "preview_ready"
         and receipt is not None
-        and receipt.tests_status == "passed"
+        and receipt.test_status == "passed"
         and receipt.review_status == "passed"
         and receipt.promotable
         and preview_ref is not None
