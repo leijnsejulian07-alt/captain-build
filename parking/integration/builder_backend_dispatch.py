@@ -17,21 +17,9 @@ _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 # Bounded adapters only. These are execution backends behind Captain, never alternate
 # routers, memory authorities, project-state owners, or user-facing control planes.
 BACKENDS: dict[str, dict[str, object]] = {
-    "openbuilder": {
-        "adapter_kind": "embedded",
-        "optional": False,
-        "remote_capable": False,
-    },
-    "freebuff": {
-        "adapter_kind": "sdk",
-        "optional": True,
-        "remote_capable": True,
-    },
-    "opencode": {
-        "adapter_kind": "process",
-        "optional": True,
-        "remote_capable": True,
-    },
+    "openbuilder": {"adapter_kind": "embedded", "optional": False, "remote_capable": False},
+    "freebuff": {"adapter_kind": "sdk", "optional": True, "remote_capable": True},
+    "opencode": {"adapter_kind": "process", "optional": True, "remote_capable": True},
 }
 
 
@@ -56,10 +44,16 @@ def _backend(backend_id: object) -> tuple[str, Mapping[str, object]]:
     return backend_id, descriptor
 
 
+def _require_ready(installed: object, enabled: object, ready: object) -> None:
+    if not _bool(installed, "installed") or not _bool(enabled, "enabled") or not _bool(ready, "ready"):
+        raise PermissionError("builder backend is not ready in Captain Settings")
+
+
 def _binding(
     scope: ScopeKey,
     *,
     session_binding: str,
+    settings_state_digest: str,
     state_epoch: int,
     backend_id: str,
     adapter_kind: str,
@@ -71,6 +65,7 @@ def _binding(
         "authority": _AUTHORITY,
         "scope": scope.as_dict(),
         "session_binding": session_binding,
+        "settings_state_digest": settings_state_digest,
         "state_epoch": state_epoch,
         "backend_id": backend_id,
         "adapter_kind": adapter_kind,
@@ -92,6 +87,7 @@ def issue_builder_backend_dispatch(
     worktree_digest: str,
     state_epoch: int,
     capability: str,
+    settings_state_digest: str,
     backend_id: str = "openbuilder",
     installed: bool,
     enabled: bool,
@@ -102,22 +98,19 @@ def issue_builder_backend_dispatch(
     allow_paid_execution: bool = False,
     now: str,
 ) -> dict[str, object]:
-    """Issue a secret-free backend dispatch projection after Captain authorization.
+    """Issue a secret-free dispatch after Captain session + Settings authorization.
 
-    The caller must source installed/enabled/ready from canonical Captain Settings.
-    This function deliberately does not accept provider credentials, model IDs, prompts,
-    repository paths, or mutable backend configuration.
+    installed/enabled/ready and settings_state_digest must come from canonical Captain
+    Settings. No provider credential, prompt, model ID, repo path or mutable backend
+    configuration is accepted or persisted here.
     """
     backend_id, descriptor = _backend(backend_id)
-    installed = _bool(installed, "installed")
-    enabled = _bool(enabled, "enabled")
-    ready = _bool(ready, "ready")
+    _require_ready(installed, enabled, ready)
+    settings_digest = _digest(settings_state_digest, "settings_state_digest")
     allow_optional_backend = _bool(allow_optional_backend, "allow_optional_backend")
     allow_remote_execution = _bool(allow_remote_execution, "allow_remote_execution")
     allow_paid_execution = _bool(allow_paid_execution, "allow_paid_execution")
 
-    if not installed or not enabled or not ready:
-        raise PermissionError("builder backend is not ready in Captain Settings")
     if bool(descriptor["optional"]) and not allow_optional_backend:
         raise PermissionError("optional builder backend requires explicit Captain selection")
     if execution_mode not in {"local", "remote-free", "remote-paid"}:
@@ -150,6 +143,7 @@ def issue_builder_backend_dispatch(
         "authority": _AUTHORITY,
         "scope": scope.as_dict(),
         "session_binding": session_binding,
+        "settings_state_digest": settings_digest,
         "state_epoch": state_epoch,
         "backend_id": backend_id,
         "adapter_kind": adapter_kind,
@@ -159,6 +153,7 @@ def issue_builder_backend_dispatch(
     row["binding_digest"] = _binding(
         scope,
         session_binding=session_binding,
+        settings_state_digest=settings_digest,
         state_epoch=state_epoch,
         backend_id=backend_id,
         adapter_kind=adapter_kind,
@@ -180,16 +175,26 @@ def validate_builder_backend_dispatch(
     worktree_digest: str,
     state_epoch: int,
     capability: str,
+    settings_state_digest: str,
+    installed: bool,
+    enabled: bool,
+    ready: bool,
     now: str,
 ) -> dict[str, object]:
     required = {
-        "schema_version", "authority", "scope", "session_binding", "state_epoch",
-        "backend_id", "adapter_kind", "capability", "execution_mode", "binding_digest",
+        "schema_version", "authority", "scope", "session_binding", "settings_state_digest",
+        "state_epoch", "backend_id", "adapter_kind", "capability", "execution_mode", "binding_digest",
     }
     if not isinstance(dispatch, Mapping) or set(dispatch) != required:
         raise ValueError("invalid builder backend dispatch schema")
     if dispatch.get("schema_version") != SCHEMA_VERSION or dispatch.get("authority") != _AUTHORITY:
         raise ValueError("invalid builder backend dispatch authority")
+
+    _require_ready(installed, enabled, ready)
+    current_settings_digest = _digest(settings_state_digest, "settings_state_digest")
+    recorded_settings_digest = _digest(dispatch.get("settings_state_digest"), "settings_state_digest")
+    if not hmac.compare_digest(recorded_settings_digest, current_settings_digest):
+        raise PermissionError("Captain Settings changed; builder dispatch refresh required")
 
     backend_id, descriptor = _backend(dispatch.get("backend_id"))
     if dispatch.get("adapter_kind") != descriptor["adapter_kind"]:
@@ -226,6 +231,7 @@ def validate_builder_backend_dispatch(
     expected_digest = _binding(
         scope,
         session_binding=session_binding,
+        settings_state_digest=recorded_settings_digest,
         state_epoch=state_epoch,
         backend_id=backend_id,
         adapter_kind=str(descriptor["adapter_kind"]),
