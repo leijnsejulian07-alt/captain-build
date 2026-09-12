@@ -41,6 +41,7 @@ jobs:
           fallback/Sandbox
           fallback/Settings
           fallback/Memory
+          fallback/Research
           parking
 
       - name: Record live-runtime-only checks
