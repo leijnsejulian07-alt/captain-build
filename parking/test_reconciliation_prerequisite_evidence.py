@@ -15,7 +15,7 @@ PREREQUISITE = "local-openbuilder-bridge"
 
 def canonical_state() -> dict:
     state = {
-        "schema_version": 3,
+        "schema_version": 4,
         "local_base_sha": None,
         "components": {c["id"]: {"state": "pending"} for c in MANIFEST["components"]},
     }
