@@ -17,11 +17,14 @@ def d(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
 
 
+REPO_SCOPE = "owner/captain#worktree-a"
+
+
 class BuilderRollbackRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "rollback-authority.sqlite3"
-        self.scope = dict(chat_id="chat-a", project_id="project-a", repo_scope="repo-a")
+        self.scope = dict(chat_id="chat-a", project_id="project-a", repo_scope=REPO_SCOPE)
         self.now = "2026-09-13T07:00:00Z"
         self.pre_head = "1" * 40
         self.post_head = "2" * 40
@@ -210,7 +213,7 @@ class BuilderRollbackRuntimeTests(unittest.TestCase):
     def test_ledger_persists_only_digests_not_raw_scope(self):
         self.runtime().execute(**self.kwargs(), apply_rollback=lambda cp: "ok")
         raw = self.db_path.read_bytes()
-        for secretish in (b"chat-a", b"project-a", b"repo-a", b"builder-a", b"req-1"):
+        for secretish in (b"chat-a", b"project-a", REPO_SCOPE.encode(), b"builder-a", b"req-1"):
             self.assertNotIn(secretish, raw)
         ledger = SQLiteRollbackAuthorityLedger(self.db_path)
         self.assertTrue(
@@ -225,7 +228,7 @@ class BuilderRollbackRuntimeTests(unittest.TestCase):
         self.assertFalse(
             ledger.verify_consumed(
                 checkpoint_binding=self.checkpoint["binding_digest"],
-                chat_id="chat-a", project_id="project-b", repo_scope="repo-a",
+                chat_id="chat-a", project_id="project-b", repo_scope=REPO_SCOPE,
                 state_epoch=8, builder_session_id="builder-a", source_request_id="req-1",
             )
         )
