@@ -8,12 +8,16 @@ from parking.integration.builder_output_scope import authorize_builder_output, i
 from parking.integration.builder_session_contract import issue_builder_session
 
 
+REPO_SCOPE = "owner/captain#worktree-a"
+OTHER_REPO_SCOPE = "owner/captain-other#worktree-b"
+
+
 class BuilderOutputScopeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.scope = {
             "chat_id": "chat-a",
             "project_id": "project-a",
-            "repo_scope": "repo://captain/a",
+            "repo_scope": REPO_SCOPE,
             "session_id": "builder-1",
             "repo_head": "a" * 40,
             "worktree_digest": "b" * 64,
@@ -56,13 +60,13 @@ class BuilderOutputScopeTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.authorize(project_id="project-b")
         with self.assertRaises(PermissionError):
-            self.authorize(repo_scope="repo://captain/b")
+            self.authorize(repo_scope=OTHER_REPO_SCOPE)
 
     def test_output_cannot_be_rebound_to_new_session(self):
         replacement = issue_builder_session(
             chat_id="chat-a",
             project_id="project-a",
-            repo_scope="repo://captain/a",
+            repo_scope=REPO_SCOPE,
             session_id="builder-2",
             repo_head="a" * 40,
             worktree_digest="b" * 64,
@@ -77,7 +81,7 @@ class BuilderOutputScopeTests(unittest.TestCase):
                 session=replacement,
                 chat_id="chat-a",
                 project_id="project-a",
-                repo_scope="repo://captain/a",
+                repo_scope=REPO_SCOPE,
                 session_id="builder-2",
                 repo_head="a" * 40,
                 worktree_digest="b" * 64,
@@ -112,7 +116,7 @@ class BuilderOutputScopeTests(unittest.TestCase):
         serialized = repr(self.output)
         self.assertNotIn("chat-a", serialized)
         self.assertNotIn("project-a", serialized)
-        self.assertNotIn("repo://captain/a", serialized)
+        self.assertNotIn(REPO_SCOPE, serialized)
         self.assertNotIn("preview-v1", serialized)
         self.assertEqual(
             set(self.output),
