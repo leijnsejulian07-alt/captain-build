@@ -27,6 +27,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check --no-input pytest
+
       - name: Compile fallback Python
         run: python -m compileall -q parking
 
