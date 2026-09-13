@@ -14,6 +14,7 @@ D2 = "2" * 64
 D3 = "3" * 64
 D4 = "4" * 64
 D5 = "5" * 64
+REPO_SCOPE = "owner/repo#worktree-a"
 
 
 class BuilderActionReceiptTests(unittest.TestCase):
@@ -21,7 +22,7 @@ class BuilderActionReceiptTests(unittest.TestCase):
         return issue_builder_action_receipt(
             chat_id="chat-a",
             project_id="project-a",
-            repo_scope="owner/repo@worktree-a",
+            repo_scope=REPO_SCOPE,
             request_id="req-1",
             action="tests",
             session_binding=D1,
@@ -38,7 +39,7 @@ class BuilderActionReceiptTests(unittest.TestCase):
         args = dict(
             chat_id="chat-a",
             project_id="project-a",
-            repo_scope="owner/repo@worktree-a",
+            repo_scope=REPO_SCOPE,
             request_id="req-1",
             action="tests",
             session_binding=D1,
@@ -92,7 +93,7 @@ class BuilderActionReceiptTests(unittest.TestCase):
             issue_builder_action_receipt(
                 chat_id="chat-a",
                 project_id="project-a",
-                repo_scope="owner/repo@worktree-a",
+                repo_scope=REPO_SCOPE,
                 request_id="req-2",
                 action="tests",
                 session_binding=D1,
