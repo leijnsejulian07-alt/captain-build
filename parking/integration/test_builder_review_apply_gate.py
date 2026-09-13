@@ -8,9 +8,12 @@ from parking.integration.builder_review_apply_gate import authorize_apply, issue
 from parking.integration.builder_session_contract import issue_builder_session
 
 
+REPO_SCOPE = "owner/captain#worktree-a"
+
+
 class BuilderReviewApplyGateTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.scope = dict(chat_id="chat-a", project_id="project-a", repo_scope="repo://captain/a",
+        self.scope = dict(chat_id="chat-a", project_id="project-a", repo_scope=REPO_SCOPE,
                           session_id="builder-1", repo_head="a" * 40,
                           worktree_digest="b" * 64, state_epoch=7)
         self.session = issue_builder_session(
@@ -62,7 +65,7 @@ class BuilderReviewApplyGateTests(unittest.TestCase):
         text = repr(self.receipt)
         self.assertNotIn("chat-a", text)
         self.assertNotIn("project-a", text)
-        self.assertNotIn("repo://captain/a", text)
+        self.assertNotIn(REPO_SCOPE, text)
 
 
 if __name__ == "__main__":
