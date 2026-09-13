@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import hashlib, hmac, json, re, secrets, time
+import hashlib, hmac, json, re, secrets, threading, time
 from typing import Any
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -45,7 +45,7 @@ class BuilderOutputHandleStore:
     """Metadata-only opaque handle store. Artifact bodies live elsewhere."""
     def __init__(self, secret:bytes):
         if not isinstance(secret,(bytes,bytearray)) or len(secret)<32: raise HandleError("secret too short")
-        self._secret=bytes(secret); self._records:dict[str,HandleRecord]={}
+        self._secret=bytes(secret); self._records:dict[str,HandleRecord]={}; self._lock=threading.RLock()
 
     def issue(self, *, kind:str, chat_id:str, project_id:str, repo_scope:str,
               epoch:int, builder_session_id:str, revision:int, artifact_digest:str,
@@ -62,15 +62,15 @@ class BuilderOutputHandleStore:
         body=f"{kind}.{scope}.{epoch}.{builder_session_id}.{revision}.{artifact_digest}.{nonce}".encode()
         sig=hmac.new(self._secret,body,hashlib.sha256).hexdigest()[:32]
         hid=f"boh1.{nonce}.{sig}"
-        self._records[hid]=HandleRecord(hid,kind,scope,epoch,builder_session_id,revision,artifact_digest,now,now+ttl_seconds)
+        with self._lock:
+            self._records[hid]=HandleRecord(hid,kind,scope,epoch,builder_session_id,revision,artifact_digest,now,now+ttl_seconds)
         return hid
 
-    def resolve(self, handle_id:str, *, expected_kind:str, chat_id:str, project_id:str,
-                repo_scope:str, current_epoch:int, builder_session_id:str,
-                min_revision:int=0, now:int|None=None)->dict[str,Any]:
+    def _resolve_record(self, handle_id:str, *, expected_kind:str, chat_id:str, project_id:str,
+                        repo_scope:str, current_epoch:int, builder_session_id:str,
+                        min_revision:int, now:int)->HandleRecord:
         rec=self._records.get(handle_id)
         if rec is None: raise AccessDenied("unknown handle")
-        now=int(time.time() if now is None else now)
         scope=_scope_digest(chat_id,project_id,repo_scope)
         checks = (
             rec.kind == expected_kind,
@@ -81,14 +81,55 @@ class BuilderOutputHandleStore:
             now <= rec.expires_at,
         )
         if not all(checks): raise AccessDenied("handle scope/session/epoch/revision/ttl mismatch")
-        return rec.public()
+        return rec
+
+    def resolve(self, handle_id:str, *, expected_kind:str, chat_id:str, project_id:str,
+                repo_scope:str, current_epoch:int, builder_session_id:str,
+                min_revision:int=0, now:int|None=None)->dict[str,Any]:
+        now=int(time.time() if now is None else now)
+        with self._lock:
+            return self._resolve_record(
+                handle_id, expected_kind=expected_kind, chat_id=chat_id, project_id=project_id,
+                repo_scope=repo_scope, current_epoch=current_epoch, builder_session_id=builder_session_id,
+                min_revision=min_revision, now=now,
+            ).public()
+
+    def consume(self, handle_id:str, *, expected_kind:str, chat_id:str, project_id:str,
+                repo_scope:str, current_epoch:int, builder_session_id:str,
+                exact_revision:int, expected_artifact_digest:str,
+                now:int|None=None)->dict[str,Any]:
+        """Atomically redeem a mutation-authorizing handle exactly once.
+
+        Apply/review code should use this instead of resolve(): it binds redemption to the
+        exact reviewed revision+digest and removes the handle before returning, preventing
+        replay and review/apply TOCTOU against a newer artifact.
+        """
+        if not isinstance(exact_revision,int) or isinstance(exact_revision,bool) or exact_revision < 0:
+            raise HandleError("invalid exact_revision")
+        if not isinstance(expected_artifact_digest,str) or not re.fullmatch(r"[0-9a-f]{64}", expected_artifact_digest):
+            raise HandleError("invalid expected_artifact_digest")
+        now=int(time.time() if now is None else now)
+        with self._lock:
+            rec=self._resolve_record(
+                handle_id, expected_kind=expected_kind, chat_id=chat_id, project_id=project_id,
+                repo_scope=repo_scope, current_epoch=current_epoch, builder_session_id=builder_session_id,
+                min_revision=exact_revision, now=now,
+            )
+            if rec.revision != exact_revision:
+                raise AccessDenied("handle revision changed since review")
+            if not hmac.compare_digest(rec.artifact_digest, expected_artifact_digest):
+                raise AccessDenied("handle artifact changed since review")
+            self._records.pop(handle_id, None)
+            return rec.public()
 
     def revoke_session(self, builder_session_id:str)->int:
         sid=_id("builder_session_id",builder_session_id)
-        doomed=[k for k,v in self._records.items() if hmac.compare_digest(v.builder_session_id,sid)]
-        for k in doomed: self._records.pop(k,None)
-        return len(doomed)
+        with self._lock:
+            doomed=[k for k,v in self._records.items() if hmac.compare_digest(v.builder_session_id,sid)]
+            for k in doomed: self._records.pop(k,None)
+            return len(doomed)
 
     def export_metadata(self)->str:
         # Never exports repo_scope, chat_id, project_id, or artifact body.
-        return json.dumps([r.public() for r in self._records.values()], sort_keys=True, separators=(",",":"))
+        with self._lock:
+            return json.dumps([r.public() for r in self._records.values()], sort_keys=True, separators=(",",":"))
