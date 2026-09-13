@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import hmac
-import threading
-from typing import Callable, Mapping, TypeVar
+from typing import Callable, Mapping, Protocol, TypeVar
 
 from parking.integration.builder_mutation_receipt import validate_builder_mutation_receipt
 from parking.integration.builder_rollback_checkpoint import validate_builder_rollback_checkpoint
@@ -10,19 +9,35 @@ from parking.integration.builder_rollback_checkpoint import validate_builder_rol
 T = TypeVar("T")
 
 
+class RollbackAuthorityLedger(Protocol):
+    def consume_once(
+        self,
+        *,
+        checkpoint_binding: str,
+        chat_id: str,
+        project_id: str,
+        repo_scope: str,
+        state_epoch: int,
+        builder_session_id: str,
+        source_request_id: str,
+        consumed_at: str,
+    ) -> bool: ...
+
+
 class BuilderRollbackRuntime:
-    """Fail-closed rollback coordinator with single-use checkpoint authority.
+    """Fail-closed rollback coordinator with durable single-use authority.
 
     The runtime refuses rollback unless the mutation receipt and rollback
     checkpoint both validate against the same live scope/state and the
     checkpoint target is exactly the mutation receipt's pre-state.
-    Authority is burned before the callback executes so a failed rollback
-    cannot be replayed without a fresh authorization path.
+    Authority is durably consumed before the callback executes so restart,
+    concurrency, or failed-callback replay cannot reuse the same checkpoint.
     """
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._consumed: set[str] = set()
+    def __init__(self, authority_ledger: RollbackAuthorityLedger) -> None:
+        if authority_ledger is None:
+            raise ValueError("durable rollback authority ledger required")
+        self._authority_ledger = authority_ledger
 
     def execute(
         self,
@@ -116,9 +131,17 @@ class BuilderRollbackRuntime:
         ):
             raise PermissionError("mutation receipt is not bound to this rollback checkpoint")
 
-        with self._lock:
-            if checkpoint_binding in self._consumed:
-                raise PermissionError("rollback checkpoint authority already consumed")
-            self._consumed.add(checkpoint_binding)
+        consumed = self._authority_ledger.consume_once(
+            checkpoint_binding=checkpoint_binding,
+            chat_id=chat_id,
+            project_id=project_id,
+            repo_scope=repo_scope,
+            state_epoch=state_epoch,
+            builder_session_id=builder_session_id,
+            source_request_id=source_request_id,
+            consumed_at=now,
+        )
+        if not consumed:
+            raise PermissionError("rollback checkpoint authority already consumed")
 
         return apply_rollback(checkpoint)
