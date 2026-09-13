@@ -33,18 +33,25 @@ jobs:
       - name: Run all fallback regression files
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mapfile -t tests < <(find parking -type f -name 'test_*.py' | sort)
           if [ "${#tests[@]}" -eq 0 ]; then
             echo "No fallback tests found" >&2
             exit 1
           fi
           printf 'Running %s fallback test files\n' "${#tests[@]}"
+          failures=0
           for test_file in "${tests[@]}"; do
             echo "::group::$test_file"
-            PYTHONPATH=. python "$test_file"
+            if ! PYTHONPATH=. python "$test_file"; then
+              failures=$((failures + 1))
+            fi
             echo "::endgroup::"
           done
+          if [ "$failures" -ne 0 ]; then
+            echo "$failures fallback test file(s) failed" >&2
+            exit 1
+          fi
 
       - name: Reject obvious secret-bearing fallback files
         shell: bash
