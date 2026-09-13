@@ -27,7 +27,7 @@ BASE_SHA = "a" * 40
 
 def canonical_state() -> dict:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "local_base_sha": None,
         "components": {c["id"]: {"state": "pending"} for c in MANIFEST["components"]},
     }
