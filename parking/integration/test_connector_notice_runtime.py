@@ -45,7 +45,7 @@ class ConnectorNoticeRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.tmp.name, "notices.sqlite3")
-        self.now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+        self.now = datetime(2026, 9, 14, 3, 30, tzinfo=timezone.utc)
         self.path = "settings://connectors/github"
 
     def tearDown(self) -> None:
@@ -73,6 +73,33 @@ class ConnectorNoticeRuntimeTests(unittest.TestCase):
         changed = state(issue="permissions_missing")
         notice = store.evaluate(changed, self.path, self.now + timedelta(minutes=10))
         self.assertEqual(notice["issue_code"], "permissions_missing")
+
+    def test_permission_requirement_change_breaks_same_issue_dismissal(self) -> None:
+        store = ConnectorNoticeStore(self.db)
+        original = state(issue="permissions_missing")
+        original["permissions_granted"] = []
+        original["permissions_required"] = ["repo"]
+        store.evaluate(original, self.path, self.now)
+        store.dismiss(original, self.now, duration=timedelta(days=1))
+
+        changed = dict(original)
+        changed["permissions_required"] = ["repo", "write"]
+        self.assertIsNotNone(store.evaluate(changed, self.path, self.now + timedelta(minutes=5)))
+
+    def test_auth_or_health_change_breaks_same_issue_dismissal(self) -> None:
+        store = ConnectorNoticeStore(self.db)
+        original = state()
+        store.evaluate(original, self.path, self.now)
+        store.dismiss(original, self.now, duration=timedelta(days=1))
+
+        auth_changed = dict(original)
+        auth_changed["auth_method"] = "api_key"
+        self.assertIsNotNone(store.evaluate(auth_changed, self.path, self.now + timedelta(minutes=5)))
+        store.dismiss(auth_changed, self.now + timedelta(minutes=5), duration=timedelta(days=1))
+
+        health_changed = dict(auth_changed)
+        health_changed["health"] = "setup_required"
+        self.assertIsNotNone(store.evaluate(health_changed, self.path, self.now + timedelta(minutes=10)))
 
     def test_ready_state_auto_clears_persisted_notice(self) -> None:
         store = ConnectorNoticeStore(self.db)
