@@ -49,6 +49,26 @@ class T(unittest.TestCase):
         h=self.issue(); self.assertEqual(self.s.revoke_session("s1"),1)
         with self.assertRaises(AccessDenied): self.s.resolve(h,expected_kind="diff",chat_id="c1",project_id="p1",repo_scope="repoA",current_epoch=7,builder_session_id="s1",now=101)
 
+    def test_epoch_cleanup_purges_only_stale_handles_in_exact_scope(self):
+        stale=self.issue()
+        current=self.s.issue(**{**self.kw,"epoch":8,"builder_session_id":"s2"})
+        other_project=self.s.issue(**{**self.kw,"project_id":"p2","epoch":7,"builder_session_id":"s3"})
+        other_repo=self.s.issue(**{**self.kw,"repo_scope":"repoB","epoch":7,"builder_session_id":"s4"})
+        self.assertEqual(self.s.revoke_stale_epochs(chat_id="c1",project_id="p1",repo_scope="repoA",current_epoch=8),1)
+        with self.assertRaises(AccessDenied):
+            self.s.resolve(stale,expected_kind="diff",chat_id="c1",project_id="p1",repo_scope="repoA",current_epoch=7,builder_session_id="s1",now=101)
+        self.assertEqual(self.s.resolve(current,expected_kind="diff",chat_id="c1",project_id="p1",repo_scope="repoA",current_epoch=8,builder_session_id="s2",now=101)["epoch"],8)
+        self.assertEqual(self.s.resolve(other_project,expected_kind="diff",chat_id="c1",project_id="p2",repo_scope="repoA",current_epoch=7,builder_session_id="s3",now=101)["epoch"],7)
+        self.assertEqual(self.s.resolve(other_repo,expected_kind="diff",chat_id="c1",project_id="p1",repo_scope="repoB",current_epoch=7,builder_session_id="s4",now=101)["epoch"],7)
+
+    def test_epoch_cleanup_is_idempotent_and_validates_epoch(self):
+        self.issue()
+        self.assertEqual(self.s.revoke_stale_epochs(chat_id="c1",project_id="p1",repo_scope="repoA",current_epoch=8),1)
+        self.assertEqual(self.s.revoke_stale_epochs(chat_id="c1",project_id="p1",repo_scope="repoA",current_epoch=8),0)
+        for bad in (-1,True,"8"):
+            with self.assertRaises(HandleError):
+                self.s.revoke_stale_epochs(chat_id="c1",project_id="p1",repo_scope="repoA",current_epoch=bad)
+
     def test_export_has_no_raw_scope_or_body(self):
         self.issue()
         rows=json.loads(self.s.export_metadata())
