@@ -17,8 +17,8 @@ def _aware(value: datetime, field: str) -> datetime:
     return value
 
 
-def _digest(*parts: str) -> str:
-    raw = json.dumps(parts, separators=(",", ":"), ensure_ascii=True)
+def _digest(*parts: object) -> str:
+    raw = json.dumps(parts, separators=(",", ":"), ensure_ascii=True, sort_keys=True)
     return sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -55,9 +55,28 @@ class ConnectorNoticeStore:
 
     @staticmethod
     def _issue_digest(state: dict) -> str:
+        """Fingerprint the complete non-secret problem state, not just issue_code.
+
+        A temporary dismissal is acknowledgement of one exact connector problem. Any change to
+        auth, health, enable/connect/install state, or permission requirements/grants must make an
+        unresolved notice visible again immediately even when a provider reuses the same issue
+        code. Sorting permission lists makes the digest deterministic without storing raw state.
+        """
         validate_connector_state(state)
         issue = state["issue_code"] or "not_ready"
-        return _digest(state["connector_id"], state["project_id"], issue)
+        problem = {
+            "schema_version": state["schema_version"],
+            "installed": state["installed"],
+            "connected": state["connected"],
+            "enabled": state["enabled"],
+            "ready": state["ready"],
+            "auth_method": state["auth_method"],
+            "health": state["health"],
+            "permissions_granted": sorted(state["permissions_granted"]),
+            "permissions_required": sorted(state["permissions_required"]),
+            "issue_code": issue,
+        }
+        return _digest(state["connector_id"], state["project_id"], problem)
 
     def clear_if_resolved(self, state: dict) -> bool:
         validate_connector_state(state)
@@ -98,7 +117,7 @@ class ConnectorNoticeStore:
         """Return a canonical notice when Captain should surface one, otherwise None.
 
         Important unresolved problems reappear after dismissal expiry and immediately when the
-        issue changes. Ready connectors automatically clear persisted notice state.
+        problem state changes. Ready connectors automatically clear persisted notice state.
         """
         validate_connector_state(state)
         now = _aware(now, "now")
