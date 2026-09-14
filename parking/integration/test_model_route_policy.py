@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from model_route_failure_policy import record_route_failure
 from model_route_policy import RoutePolicyError, choose_route
 
 
@@ -67,6 +68,76 @@ class ModelRoutePolicyTests(unittest.TestCase):
         second = choose_route(candidates, task="chat", excluded_routes=(("local", "a"),))
         self.assertEqual(second["selected"]["provider_id"], "free")
         self.assertIn("already_attempted", {item["reason"] for item in second["rejected"]})
+
+    def test_active_cooldown_routes_to_next_free_candidate(self):
+        cooldown = record_route_failure(
+            provider_id="local",
+            model_id="a",
+            failure_kind="transient",
+            observed_at_ms=1_000,
+        )
+        result = choose_route([
+            candidate("local", "a", cost_class="local", priority=0),
+            candidate("free", "b", cost_class="free", priority=0),
+        ], task="chat", failure_states=(cooldown,), now_ms=2_000)
+        self.assertEqual(result["selected"]["provider_id"], "free")
+        self.assertIn("provider_cooldown", {item["reason"] for item in result["rejected"]})
+
+    def test_expired_cooldown_restores_route_eligibility(self):
+        cooldown = record_route_failure(
+            provider_id="local",
+            model_id="a",
+            failure_kind="transient",
+            observed_at_ms=1_000,
+        )
+        result = choose_route([
+            candidate("local", "a", cost_class="local", priority=0),
+            candidate("free", "b", cost_class="free", priority=0),
+        ], task="chat", failure_states=(cooldown,), now_ms=cooldown["retry_not_before_ms"])
+        self.assertEqual(result["selected"]["provider_id"], "local")
+
+    def test_blocked_route_never_auto_retries(self):
+        blocked = record_route_failure(
+            provider_id="local",
+            model_id="a",
+            failure_kind="auth_invalid",
+            observed_at_ms=1_000,
+        )
+        result = choose_route([
+            candidate("local", "a", cost_class="local"),
+            candidate("free", "b", cost_class="free"),
+        ], task="chat", failure_states=(blocked,), now_ms=9_999_999)
+        self.assertEqual(result["selected"]["provider_id"], "free")
+        self.assertIn("provider_blocked", {item["reason"] for item in result["rejected"]})
+
+    def test_cooldown_never_unlocks_paid_fallback_without_authorization(self):
+        cooldown = record_route_failure(
+            provider_id="free",
+            model_id="a",
+            failure_kind="rate_limited",
+            observed_at_ms=1_000,
+        )
+        result = choose_route([
+            candidate("free", "a", cost_class="free"),
+            candidate("paid", "b", cost_class="paid"),
+        ], task="chat", failure_states=(cooldown,), now_ms=2_000)
+        self.assertIsNone(result["selected"])
+        self.assertEqual(
+            {item["reason"] for item in result["rejected"]},
+            {"provider_cooldown", "paid_not_authorized"},
+        )
+
+    def test_failure_state_requires_explicit_clock_and_is_route_scoped(self):
+        state = record_route_failure(
+            provider_id="other",
+            model_id="m",
+            failure_kind="transient",
+            observed_at_ms=1_000,
+        )
+        with self.assertRaises(RoutePolicyError):
+            choose_route([candidate("local", "m")], task="chat", failure_states=(state,))
+        result = choose_route([candidate("local", "m")], task="chat", failure_states=(state,), now_ms=2_000)
+        self.assertEqual(result["selected"]["provider_id"], "local")
 
     def test_duplicate_route_fails_closed(self):
         with self.assertRaises(RoutePolicyError):
