@@ -26,8 +26,8 @@ def _clean_text(value: object, max_len: int = 120) -> str:
     return value
 
 
-def _fingerprint(connector_id: str, issue_code: str, project_id: str) -> str:
-    raw = json.dumps([connector_id, issue_code, project_id], separators=(",", ":"), ensure_ascii=True)
+def _digest(value: object) -> str:
+    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=True, sort_keys=True)
     return sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -88,6 +88,33 @@ def validate_connector_state(state: dict) -> bool:
     if state["health"] == "healthy" and issue is not None:
         raise ContractError("healthy cannot carry issue")
     return True
+
+
+def connector_problem_fingerprint(state: dict) -> str:
+    """Bind a notice to the complete canonical, non-secret connector problem state.
+
+    A rendered notice must become stale whenever auth, health, installation/connection/enablement,
+    permissions, issue code or schema changes. Permission ordering is normalized so semantically
+    identical states retain the same fingerprint. No credential or provider secret is accepted by
+    the connector-state schema, so this digest is safe to persist or expose as an opaque token.
+    """
+    validate_connector_state(state)
+    issue = state["issue_code"] or "not_ready"
+    problem = {
+        "schema_version": state["schema_version"],
+        "connector_id": state["connector_id"],
+        "project_id": state["project_id"],
+        "installed": state["installed"],
+        "connected": state["connected"],
+        "enabled": state["enabled"],
+        "ready": state["ready"],
+        "auth_method": state["auth_method"],
+        "health": state["health"],
+        "permissions_granted": sorted(state["permissions_granted"]),
+        "permissions_required": sorted(state["permissions_required"]),
+        "issue_code": issue,
+    }
+    return _digest(problem)
 
 
 def validate_provider_expectation(expectation: dict) -> bool:
@@ -194,7 +221,7 @@ def build_notice(
         "connector_id": state["connector_id"],
         "project_id": state["project_id"],
         "issue_code": issue,
-        "notice_fingerprint": _fingerprint(state["connector_id"], issue, state["project_id"]),
+        "notice_fingerprint": connector_problem_fingerprint(state),
         "remediation_path": remediation_path,
         "dismiss_until": dismiss_until.isoformat() if dismiss_until else None,
         "secret_fields": [],
@@ -222,8 +249,7 @@ def should_surface(notice: dict | None, state: dict, now: datetime) -> bool:
     _clean_text(notice["remediation_path"], 200)
     if not notice["remediation_path"].startswith("settings://connectors/"):
         raise ContractError("bad remediation")
-    issue = state["issue_code"] or "not_ready"
-    if notice["notice_fingerprint"] != _fingerprint(state["connector_id"], issue, state["project_id"]):
+    if notice["notice_fingerprint"] != connector_problem_fingerprint(state):
         return True
     dismiss_until = notice["dismiss_until"]
     if dismiss_until is None:
