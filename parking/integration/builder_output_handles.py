@@ -129,6 +129,25 @@ class BuilderOutputHandleStore:
             for k in doomed: self._records.pop(k,None)
             return len(doomed)
 
+    def revoke_stale_epochs(self, *, chat_id:str, project_id:str, repo_scope:str, current_epoch:int)->int:
+        """Eagerly purge stale output handles for one exact Captain project/repo scope.
+
+        Access is already fail-closed because resolve/consume require an exact epoch match.
+        This cleanup prevents inaccessible preview/diff/console/test handles from lingering
+        until TTL after Project State advances, without touching another project/repository
+        scope or any handles already issued in the current epoch.
+        """
+        if not isinstance(current_epoch,int) or isinstance(current_epoch,bool) or current_epoch<0:
+            raise HandleError("invalid current_epoch")
+        scope=_scope_digest(chat_id,project_id,repo_scope)
+        with self._lock:
+            doomed=[
+                k for k,v in self._records.items()
+                if hmac.compare_digest(v.scope_digest,scope) and v.epoch != current_epoch
+            ]
+            for k in doomed: self._records.pop(k,None)
+            return len(doomed)
+
     def export_metadata(self)->str:
         # Never exports repo_scope, chat_id, project_id, or artifact body.
         with self._lock:
