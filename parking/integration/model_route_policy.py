@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
+from model_route_failure_policy import (
+    RouteFailurePolicyError,
+    route_failure_reason,
+    validate_failure_states,
+)
+
 
 SCHEMA_VERSION = 1
 _ALLOWED_COST_CLASSES = {"free", "local", "paid"}
@@ -30,6 +36,12 @@ def _token(value: object, name: str) -> str:
     if not isinstance(value, str) or not value or len(value) > 128:
         raise RoutePolicyError(f"invalid {name}")
     if any(ch.isspace() for ch in value):
+        raise RoutePolicyError(f"invalid {name}")
+    return value
+
+
+def _timestamp(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise RoutePolicyError(f"invalid {name}")
     return value
 
@@ -80,13 +92,16 @@ def choose_route(
     task: str,
     allow_paid: bool = False,
     excluded_routes: Sequence[tuple[str, str]] = (),
+    failure_states: Sequence[Mapping[str, object]] = (),
+    now_ms: int | None = None,
 ) -> dict[str, object]:
     """Return a deterministic Captain-owned route decision.
 
     Paid providers are never eligible unless allow_paid=True is explicitly supplied by
-    the caller. Disabled, unready or unavailable providers are never selected. Degraded
-    providers are fallback-only behind healthy candidates. The returned projection is
-    deliberately secret-free and carries enough reason metadata for observability.
+    the caller. Disabled, unready or unavailable providers are never selected. Active
+    cooldowns and remediation-blocked routes are also ineligible. Degraded providers
+    are fallback-only behind healthy candidates. The returned projection is deliberately
+    secret-free and carries enough reason metadata for observability.
     """
     task_name = _token(task, "task")
     if task_name not in _ALLOWED_TASKS:
@@ -107,6 +122,22 @@ def choose_route(
             raise RoutePolicyError("invalid excluded route")
         excluded.add((_token(pair[0], "provider_id"), _token(pair[1], "model_id")))
 
+    if now_ms is not None:
+        now = _timestamp(now_ms, "now_ms")
+    else:
+        now = None
+    try:
+        parsed_failures = validate_failure_states(failure_states)
+    except RouteFailurePolicyError as exc:
+        raise RoutePolicyError("invalid route failure state") from exc
+    if parsed_failures and now is None:
+        raise RoutePolicyError("now_ms is required when failure_states are supplied")
+
+    raw_failure_by_route: dict[tuple[str, str], Mapping[str, object]] = {}
+    for raw in failure_states:
+        key = (_token(raw.get("provider_id"), "provider_id"), _token(raw.get("model_id"), "model_id"))
+        raw_failure_by_route[key] = raw
+
     rejected: list[dict[str, str]] = []
     eligible: list[ProviderCandidate] = []
     for candidate in parsed:
@@ -124,6 +155,11 @@ def choose_route(
             reason = "missing_capability"
         elif candidate.cost_class == "paid" and not allow_paid:
             reason = "paid_not_authorized"
+        elif route_key in parsed_failures:
+            try:
+                reason = route_failure_reason(raw_failure_by_route[route_key], now_ms=now)
+            except RouteFailurePolicyError as exc:
+                raise RoutePolicyError("invalid route failure state") from exc
         if reason is not None:
             rejected.append({"provider_id": candidate.provider_id, "model_id": candidate.model_id, "reason": reason})
         else:
