@@ -1,0 +1,67 @@
+name: Captain fallback regressions
+
+on:
+  pull_request:
+    paths:
+      - "parking/**"
+      - ".github/workflows/fallback-regressions.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: captain-fallback-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parking-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check --no-input pytest
+
+      - name: Compile fallback Python
+        run: python -m compileall -q parking
+
+      - name: Run all fallback regression files
+        shell: bash
+        run: |
+          set -uo pipefail
+          mapfile -t tests < <(find parking -type f -name 'test_*.py' | sort)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "No fallback tests found" >&2
+            exit 1
+          fi
+          printf 'Running %s fallback test files\n' "${#tests[@]}"
+          failures=0
+          for test_file in "${tests[@]}"; do
+            echo "::group::$test_file"
+            if ! PYTHONPATH=. python "$test_file"; then
+              failures=$((failures + 1))
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$failures" -ne 0 ]; then
+            echo "$failures fallback test file(s) failed" >&2
+            exit 1
+          fi
+
+      - name: Reject obvious secret-bearing fallback files
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE --exclude='test_*.py' --exclude='*.md' --exclude='*.json' \
+            '(BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})' parking; then
+            echo "Potential secret material detected in fallback source" >&2
+            exit 1
+          fi

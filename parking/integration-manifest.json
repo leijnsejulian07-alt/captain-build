@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "generated_on": "2026-08-30",
+  "source_repository": "leijnsejulian07-alt/captain-build",
+  "required_local_checks": ["unit", "doctor", "router", "project_isolation", "repo_isolation"],
+  "external_prerequisites": ["local-openbuilder-bridge", "research-project-state-bridge"],
+  "components": [
+    {"id":"agent-skills","pr":1,"depends_on":[]},
+    {"id":"scoped-jobs","pr":2,"depends_on":[]},
+    {"id":"bounded-build-profiles","pr":3,"depends_on":["scoped-jobs"]},
+    {"id":"connector-health","pr":4,"depends_on":[]},
+    {"id":"connector-notices","pr":5,"depends_on":["connector-health"]},
+    {"id":"project-state","pr":6,"depends_on":[]},
+    {"id":"fallback-reconciliation","pr":7,"depends_on":[]},
+    {"id":"memory-context","pr":8,"depends_on":["project-state"]},
+    {"id":"provider-health-routing","pr":9,"depends_on":[]},
+    {"id":"preview-session","pr":10,"depends_on":["local-openbuilder-bridge"]},
+    {"id":"builder-artifacts","pr":11,"depends_on":["preview-session"]},
+    {"id":"observability-events","pr":12,"depends_on":[]},
+    {"id":"settings-plugin-registry","pr":13,"depends_on":["connector-health"]},
+    {"id":"plugin-capability-grants","pr":14,"depends_on":["settings-plugin-registry"]},
+    {"id":"repo-agent-loop","pr":15,"depends_on":["scoped-jobs","bounded-build-profiles","builder-artifacts"]},
+    {"id":"research-session","pr":16,"depends_on":["project-state","research-project-state-bridge"]},
+    {"id":"acceptance-gate","pr":17,"depends_on":["fallback-reconciliation"]},
+    {"id":"build-profile-detection","pr":18,"depends_on":["bounded-build-profiles"]}
+  ]
+}
