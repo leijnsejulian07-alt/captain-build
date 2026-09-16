@@ -23,6 +23,20 @@ def expect(exc_type, fn):
     raise AssertionError(f"expected {exc_type.__name__}")
 
 
+def matches(runtime, receipt, operation, **overrides):
+    args = {
+        "operation_digest": operation,
+        "chat_id": "chat-a",
+        "project_id": "project-a",
+        "repo_scope": "owner/repo#main",
+        "current_state_epoch": 9,
+        "plugin_id": "github",
+        "capability": "repo.write",
+    }
+    args.update(overrides)
+    return runtime.receipt_matches(receipt, **args)
+
+
 def main():
     records = [record()]
     ticket = issue_plugin_dispatch_ticket(
@@ -36,8 +50,24 @@ def main():
         current_state_epoch=9, operation_digest=operation,
     )
     assert receipt["authorized"] is True
-    assert runtime.receipt_matches(receipt, operation_digest=operation)
-    assert not runtime.receipt_matches(receipt, operation_digest="b" * 64)
+    assert matches(runtime, receipt, operation)
+    assert not matches(runtime, receipt, "b" * 64)
+
+    # The execution receipt is still bound to the same isolation wall at the
+    # side-effect boundary; a digest alone cannot authorize another scope.
+    assert not matches(runtime, receipt, operation, chat_id="chat-b")
+    assert not matches(runtime, receipt, operation, project_id="project-b")
+    assert not matches(runtime, receipt, operation, repo_scope="owner/other#main")
+    assert not matches(runtime, receipt, operation, current_state_epoch=10)
+    assert not matches(runtime, receipt, operation, plugin_id="builder")
+    assert not matches(runtime, receipt, operation, capability="repo.read")
+
+    tampered = dict(receipt)
+    tampered["scope"] = {"chat_id": "chat-a", "project_id": "project-a", "repo_scope": "owner/other#main"}
+    assert not matches(runtime, tampered, operation)
+    malformed = dict(receipt)
+    malformed["ticket_digest"] = "not-a-digest"
+    assert not matches(runtime, malformed, operation)
 
     # Side-effect authority is one-shot: retries require a freshly issued ticket.
     expect(PermissionError, lambda: runtime.authorize_once(
