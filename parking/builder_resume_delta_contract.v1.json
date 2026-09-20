@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "captain://builder/resume-delta/v1",
+  "title": "Captain Builder Resume Delta v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "scope", "observed", "delta", "freshness"],
+  "properties": {
+    "version": {"const": 1},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chat_id", "project_id", "repo_scope", "builder_session_id", "state_epoch"],
+      "properties": {
+        "chat_id": {"type": "string", "minLength": 1},
+        "project_id": {"type": "string", "minLength": 1},
+        "repo_scope": {"type": "string", "minLength": 1},
+        "builder_session_id": {"type": "string", "minLength": 1},
+        "state_epoch": {"type": "integer", "minimum": 0}
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "base", "generated_at"],
+      "properties": {
+        "head": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+        "base": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+        "generated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["changed_paths", "manifest_hashes"],
+      "properties": {
+        "changed_paths": {"type": "array", "maxItems": 500, "items": {"type": "string", "minLength": 1}},
+        "manifest_hashes": {"type": "object", "maxProperties": 32, "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+        "symbol_delta": {"type": "array", "maxItems": 1000, "items": {"type": "string", "maxLength": 512}}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope_match", "epoch_match", "head_match", "usable"],
+      "properties": {
+        "scope_match": {"type": "boolean"},
+        "epoch_match": {"type": "boolean"},
+        "head_match": {"type": "boolean"},
+        "usable": {"type": "boolean"}
+      }
+    }
+  }
+}
