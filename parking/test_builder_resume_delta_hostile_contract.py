@@ -4,7 +4,7 @@ No repository-authored commands are executed. Reconcile locally only after runti
 from copy import deepcopy
 
 WALLS = ("chat_id", "project_id", "repo_scope", "builder_session_id", "state_epoch")
-MAX_CHANGED_PATHS = 512
+MAX_CHANGED_PATHS = 500
 MAX_PATH_CHARS = 1024
 
 
