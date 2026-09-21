@@ -11,6 +11,13 @@ class ScopeError(PermissionError):
     pass
 
 
+MAX_FILE_BYTES = 2_000_000
+MAX_SESSION_BYTES = 16_000_000
+MAX_SESSION_FILES = 512
+MAX_LOG_EVENTS = 2_000
+MAX_CHECKPOINTS = 64
+
+
 def _safe_relpath(path: str) -> str:
     if not isinstance(path, str) or not path or len(path) > 1024 or "\x00" in path or "\\" in path:
         raise ScopeError("invalid repository-relative path")
@@ -18,6 +25,10 @@ def _safe_relpath(path: str) -> str:
     if path.startswith("/") or any(p in ("", ".", "..") for p in parts) or (parts and ":" in parts[0]):
         raise ScopeError("invalid repository-relative path")
     return path
+
+
+def _utf8_size(value: str) -> int:
+    return len(value.encode("utf-8"))
 
 
 @dataclass(frozen=True)
@@ -74,7 +85,8 @@ class FakeBuilderRuntimeAdapter:
     def inspect(self, scope: BuilderScope) -> dict:
         s = self._owned(scope)
         return {"checkpoint": s.checkpoint, "preview": s.preview_owner is not None,
-                "file_count": len(s.files), "log_count": len(s.logs)}
+                "file_count": len(s.files), "log_count": len(s.logs),
+                "bytes_used": sum(_utf8_size(v) for v in s.files.values())}
 
     def list_files(self, scope: BuilderScope, prefix: str = "", limit: int = 1000) -> tuple[str, ...]:
         s = self._owned(scope)
@@ -86,8 +98,14 @@ class FakeBuilderRuntimeAdapter:
 
     def write_file(self, scope: BuilderScope, path: str, content: str) -> None:
         s = self._owned(scope); path = _safe_relpath(path)
-        if not isinstance(content, str) or len(content) > 2_000_000:
+        if not isinstance(content, str) or _utf8_size(content) > MAX_FILE_BYTES:
             raise ScopeError("invalid file content")
+        if path not in s.files and len(s.files) >= MAX_SESSION_FILES:
+            raise ScopeError("builder session file quota exceeded")
+        old_size = _utf8_size(s.files.get(path, ""))
+        used = sum(_utf8_size(v) for v in s.files.values())
+        if used - old_size + _utf8_size(content) > MAX_SESSION_BYTES:
+            raise ScopeError("builder session byte quota exceeded")
         s.files[path] = content
 
     def read_file(self, scope: BuilderScope, path: str) -> str:
@@ -112,9 +130,9 @@ class FakeBuilderRuntimeAdapter:
         s = self._owned(scope)
         if not isinstance(command, str) or not command.strip() or len(command) > 4096 or "\x00" in command:
             raise ScopeError("invalid command")
+        if len(s.logs) >= MAX_LOG_EVENTS:
+            raise ScopeError("builder session log quota exceeded")
         # Acceptance fake only: never execute and never persist raw command text.
-        # Commands commonly contain tokens, URLs with credentials, env assignments,
-        # paths or project data; observability gets a non-sensitive lifecycle event.
         event = "fake-run:accepted"
         s.logs.append(event)
         return event
@@ -124,6 +142,8 @@ class FakeBuilderRuntimeAdapter:
 
     def checkpoint(self, scope: BuilderScope) -> int:
         s = self._owned(scope)
+        if len(s.snapshots) >= MAX_CHECKPOINTS:
+            raise ScopeError("builder session checkpoint quota exceeded")
         s.checkpoint += 1
         s.snapshots[s.checkpoint] = (dict(s.files), len(s.logs))
         return s.checkpoint
