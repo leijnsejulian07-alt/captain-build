@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "captain.connector_state.v1",
+  "title": "Captain Connector State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["connector_id", "installed", "connected", "enabled", "ready", "auth_method", "permissions", "health"],
+  "properties": {
+    "connector_id": {"type":"string","minLength":1,"maxLength":128,"pattern":"^[a-z0-9][a-z0-9._-]*$"},
+    "installed": {"type":"boolean"},
+    "connected": {"type":"boolean"},
+    "enabled": {"type":"boolean"},
+    "ready": {"type":"boolean"},
+    "auth_method": {"enum":["none","oauth","api_key","id_based","local_session"]},
+    "permissions": {"type":"array","maxItems":128,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128}},
+    "health": {
+      "type":"object","additionalProperties":false,
+      "required":["status","checked_at","auth_status","provider_version_status"],
+      "properties": {
+        "status":{"enum":["unknown","healthy","degraded","blocked"]},
+        "checked_at":{"type":["string","null"],"format":"date-time"},
+        "auth_status":{"enum":["not_required","unknown","valid","expired","invalid","reauth_required"]},
+        "provider_version_status":{"enum":["unknown","current","deprecated","migration_required"]},
+        "safe_message":{"type":["string","null"],"maxLength":500}
+      }
+    },
+    "remediation": {
+      "type":["object","null"],"additionalProperties":false,
+      "required":["code","settings_section"],
+      "properties": {
+        "code":{"type":"string","minLength":1,"maxLength":80},
+        "settings_section":{"type":"string","minLength":1,"maxLength":160},
+        "remind_after":{"type":["string","null"],"format":"date-time"}
+      }
+    }
+  },
+  "allOf": [
+    {"if":{"properties":{"installed":{"const":false}}},"then":{"properties":{"connected":{"const":false},"enabled":{"const":false},"ready":{"const":false}}}},
+    {"if":{"properties":{"connected":{"const":false}}},"then":{"properties":{"ready":{"const":false}}}},
+    {"if":{"properties":{"enabled":{"const":false}}},"then":{"properties":{"ready":{"const":false}}}},
+    {"if":{"properties":{"ready":{"const":true}}},"then":{"properties":{"installed":{"const":true},"connected":{"const":true},"enabled":{"const":true},"health":{"properties":{"status":{"const":"healthy"},"auth_status":{"enum":["not_required","valid"]},"provider_version_status":{"enum":["unknown","current"]}}}}}},
+    {"if":{"properties":{"auth_method":{"enum":["oauth","api_key","id_based","local_session"]}}},"then":{"properties":{"connected":{"type":"boolean"}}}}
+  ]
+}
