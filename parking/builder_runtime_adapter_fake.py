@@ -112,8 +112,10 @@ class FakeBuilderRuntimeAdapter:
         s = self._owned(scope)
         if not isinstance(command, str) or not command.strip() or len(command) > 4096 or "\x00" in command:
             raise ScopeError("invalid command")
-        # Acceptance fake only: never execute. Do not persist environment/secrets.
-        event = f"fake-run:{command.strip()}"
+        # Acceptance fake only: never execute and never persist raw command text.
+        # Commands commonly contain tokens, URLs with credentials, env assignments,
+        # paths or project data; observability gets a non-sensitive lifecycle event.
+        event = "fake-run:accepted"
         s.logs.append(event)
         return event
 
