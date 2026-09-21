@@ -1,4 +1,4 @@
-"""Regression for connector notice persistence/remediation semantics."""
+"""Regression for connector notice persistence/remediation and scope semantics."""
 from datetime import datetime, timedelta, timezone
 from connector_notice_policy import notice_for, visible
 
@@ -17,6 +17,25 @@ assert set(n) == {"connector_id","code","important","settings_section","remind_a
 assert visible(n, None, NOW)
 assert not visible(n, NOW, NOW + timedelta(hours=23))
 assert visible(n, NOW, NOW + timedelta(hours=24))
+# Global notices must not masquerade as project-scoped state.
+assert not visible(n, None, NOW, project_id="p1", state_epoch=7)
+
+# Project notices are bound to the exact Project State epoch.
+p=notice_for(c(project_id="p1", state_epoch=7), NOW)
+assert p["project_id"] == "p1" and p["state_epoch"] == 7
+assert visible(p, None, NOW, project_id="p1", state_epoch=7)
+assert not visible(p, None, NOW, project_id="p1", state_epoch=8)
+assert not visible(p, None, NOW, project_id="p2", state_epoch=7)
+assert not visible(p, None, NOW)
+
+# Partial/malformed project scope fails closed at creation.
+for bad in ({"project_id":"p1"}, {"state_epoch":7}, {"project_id":"p1","state_epoch":True}, {"project_id":"","state_epoch":7}):
+    try:
+        notice_for(c(**bad), NOW)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"malformed scope accepted: {bad!r}")
 
 # Resolution automatically clears the notice.
 healthy=c(ready=True, health={"status":"healthy","auth_status":"valid","provider_version_status":"current"})
