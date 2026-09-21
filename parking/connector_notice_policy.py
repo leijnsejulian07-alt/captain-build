@@ -2,7 +2,7 @@
 
 Production integration should adapt these semantics into Captain's canonical Settings
 registry. No credentials, tokens, provider payloads, or secret-derived strings belong
-in notice state. Project-bound notices are epoch-bound and fail closed.
+in notice state. Project-bound notices are full-scope/epoch-bound and fail closed.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -21,13 +21,16 @@ def _utc(value):
 
 
 def _scope(connector):
-    project_id = connector.get("project_id")
-    epoch = connector.get("state_epoch")
-    if project_id is None and epoch is None:
-        return None, None
-    if not isinstance(project_id, str) or not project_id or not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
-        raise ValueError("project connector notices require project_id + non-negative integer state_epoch")
-    return project_id, epoch
+    keys = ("chat_id", "project_id", "repo_scope", "state_epoch")
+    values = tuple(connector.get(k) for k in keys)
+    if all(v is None for v in values):
+        return None
+    chat_id, project_id, repo_scope, epoch = values
+    if not all(isinstance(v, str) and v for v in (chat_id, project_id, repo_scope)):
+        raise ValueError("project connector notices require chat_id + project_id + repo_scope + state_epoch")
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+        raise ValueError("project connector notices require a non-negative integer state_epoch")
+    return dict(zip(keys, values))
 
 
 def notice_for(connector, now=None):
@@ -37,7 +40,7 @@ def notice_for(connector, now=None):
     Resolution clears it automatically because healthy/ready state yields None.
     """
     now = _utc(now or datetime.now(timezone.utc))
-    project_id, epoch = _scope(connector)
+    scope = _scope(connector)
     h = connector["health"]
     if connector.get("ready") and h.get("status") == "healthy":
         return None
@@ -58,33 +61,31 @@ def notice_for(connector, now=None):
     section = remediation.get("settings_section")
     if not isinstance(section, str) or not section:
         section = f"settings/connectors/{connector['connector_id']}"
-    remind_after = remediation.get("remind_after")
     notice = {
-        "connector_id": connector["connector_id"],
-        "code": code,
-        "important": code in IMPORTANT,
-        "settings_section": section,
-        "remind_after": remind_after,
-        "generated_at": now.isoformat(),
+        "connector_id": connector["connector_id"], "code": code,
+        "important": code in IMPORTANT, "settings_section": section,
+        "remind_after": remediation.get("remind_after"), "generated_at": now.isoformat(),
     }
-    if project_id is not None:
-        notice["project_id"] = project_id
-        notice["state_epoch"] = epoch
+    if scope is not None:
+        notice.update(scope)
     return notice
 
 
-def visible(notice, dismissed_at=None, now=None, *, project_id=None, state_epoch=None):
+def visible(notice, dismissed_at=None, now=None, *, chat_id=None, project_id=None, repo_scope=None, state_epoch=None):
     if notice is None:
         return False
-    scoped_project = notice.get("project_id")
-    scoped_epoch = notice.get("state_epoch")
-    if scoped_project is not None or scoped_epoch is not None:
-        if not isinstance(scoped_project, str) or not scoped_project or not isinstance(scoped_epoch, int) or isinstance(scoped_epoch, bool) or scoped_epoch < 0:
+    keys = ("chat_id", "project_id", "repo_scope", "state_epoch")
+    stored = tuple(notice.get(k) for k in keys)
+    requested = (chat_id, project_id, repo_scope, state_epoch)
+    if any(v is not None for v in stored):
+        try:
+            normalized = _scope(notice)
+        except ValueError:
             return False
-        if project_id != scoped_project or state_epoch != scoped_epoch:
+        if normalized is None or stored != requested:
             return False
-    elif project_id is not None or state_epoch is not None:
-        # Global notices may render in Settings, but never masquerade as project-scoped state.
+    elif any(v is not None for v in requested):
+        # Global notices may render in Settings, but never masquerade as project state.
         return False
 
     now = _utc(now or datetime.now(timezone.utc))
