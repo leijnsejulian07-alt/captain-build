@@ -12,10 +12,11 @@ class BuilderRuntimeIsolationTests(unittest.TestCase):
         d = self.a.__dict__.copy(); d.update(kw); return BuilderScope(**d)
 
     def assert_denied(self, scope):
-        for op in (self.rt.inspect, self.rt.checkpoint, self.rt.preview, self.rt.diff, self.rt.logs):
+        for op in (self.rt.inspect, self.rt.checkpoint, self.rt.preview, self.rt.diff, self.rt.logs, self.rt.list_files):
             with self.assertRaises(ScopeError): op(scope)
         with self.assertRaises(ScopeError): self.rt.read_file(scope, "src/app.py")
         with self.assertRaises(ScopeError): self.rt.write_file(scope, "src/app.py", "x")
+        with self.assertRaises(ScopeError): self.rt.delete_file(scope, "src/app.py")
         with self.assertRaises(ScopeError): self.rt.run(scope, "test")
 
     def test_each_wall_is_authoritative(self):
@@ -51,6 +52,27 @@ class BuilderRuntimeIsolationTests(unittest.TestCase):
         with self.assertRaises(ScopeError): self.rt.read_file(self.a, "src/new.py")
         self.assertEqual(self.rt.logs(self.a), ("fake-run:test-v1",))
         self.assertEqual(self.rt.diff(self.a), {})
+
+    def test_delete_is_diffed_and_rollback_restores_file(self):
+        self.rt.write_file(self.a, "src/app.py", "v1")
+        cp = self.rt.checkpoint(self.a)
+        self.rt.delete_file(self.a, "src/app.py")
+        self.assertEqual(self.rt.diff(self.a), {"src/app.py": "<deleted>"})
+        with self.assertRaises(ScopeError): self.rt.read_file(self.a, "src/app.py")
+        self.rt.rollback(self.a, cp)
+        self.assertEqual(self.rt.read_file(self.a, "src/app.py"), "v1")
+
+    def test_file_listing_is_scoped_bounded_and_prefix_filtered(self):
+        self.rt.write_file(self.a, "src/app.py", "x")
+        self.rt.write_file(self.a, "src/lib/util.py", "x")
+        self.rt.write_file(self.a, "README.md", "x")
+        self.assertEqual(self.rt.list_files(self.a), ("README.md", "src/app.py", "src/lib/util.py"))
+        self.assertEqual(self.rt.list_files(self.a, "src"), ("src/app.py", "src/lib/util.py"))
+        self.assertEqual(self.rt.list_files(self.a, "src", 1), ("src/app.py",))
+        for bad_limit in (0, -1, 1001, True, "10"):
+            with self.assertRaises(ScopeError): self.rt.list_files(self.a, limit=bad_limit)
+        for bad_prefix in ("../", "/abs", "a//b", "C:/secret", "a\\b"):
+            with self.assertRaises(ScopeError): self.rt.list_files(self.a, bad_prefix)
 
     def test_rollback_must_be_in_owned_history(self):
         self.assertEqual(self.rt.checkpoint(self.a), 1)
