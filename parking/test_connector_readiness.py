@@ -30,7 +30,9 @@ def run():
     for auth in ("unknown", "expired", "invalid", "reauth_required", "not_required"):
         x = base(); x["health"] = dict(x["health"], auth_status=auth)
         assert evaluate(x)["ready"] is False, auth
-    for version in ("deprecated", "migration_required"):
+    # Provider/version health must be positively current. Unknown is not evidence
+    # of compatibility and therefore cannot preserve Ready across provider changes.
+    for version in ("unknown", "deprecated", "migration_required"):
         x = base(); x["health"] = dict(x["health"], provider_version_status=version)
         assert evaluate(x)["ready"] is False, version
     x = base(); x["health"] = dict(x["health"], status="degraded")
