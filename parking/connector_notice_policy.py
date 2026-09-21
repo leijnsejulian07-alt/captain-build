@@ -2,7 +2,7 @@
 
 Production integration should adapt these semantics into Captain's canonical Settings
 registry. No credentials, tokens, provider payloads, or secret-derived strings belong
-in notice state.
+in notice state. Project-bound notices are epoch-bound and fail closed.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -20,6 +20,16 @@ def _utc(value):
     return value.astimezone(timezone.utc)
 
 
+def _scope(connector):
+    project_id = connector.get("project_id")
+    epoch = connector.get("state_epoch")
+    if project_id is None and epoch is None:
+        return None, None
+    if not isinstance(project_id, str) or not project_id or not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+        raise ValueError("project connector notices require project_id + non-negative integer state_epoch")
+    return project_id, epoch
+
+
 def notice_for(connector, now=None):
     """Return a secret-free persistent notice or None.
 
@@ -27,6 +37,7 @@ def notice_for(connector, now=None):
     Resolution clears it automatically because healthy/ready state yields None.
     """
     now = _utc(now or datetime.now(timezone.utc))
+    project_id, epoch = _scope(connector)
     h = connector["health"]
     if connector.get("ready") and h.get("status") == "healthy":
         return None
@@ -48,8 +59,7 @@ def notice_for(connector, now=None):
     if not isinstance(section, str) or not section:
         section = f"settings/connectors/{connector['connector_id']}"
     remind_after = remediation.get("remind_after")
-    # Persist only normalized, non-secret UI state.
-    return {
+    notice = {
         "connector_id": connector["connector_id"],
         "code": code,
         "important": code in IMPORTANT,
@@ -57,11 +67,26 @@ def notice_for(connector, now=None):
         "remind_after": remind_after,
         "generated_at": now.isoformat(),
     }
+    if project_id is not None:
+        notice["project_id"] = project_id
+        notice["state_epoch"] = epoch
+    return notice
 
 
-def visible(notice, dismissed_at=None, now=None):
+def visible(notice, dismissed_at=None, now=None, *, project_id=None, state_epoch=None):
     if notice is None:
         return False
+    scoped_project = notice.get("project_id")
+    scoped_epoch = notice.get("state_epoch")
+    if scoped_project is not None or scoped_epoch is not None:
+        if not isinstance(scoped_project, str) or not scoped_project or not isinstance(scoped_epoch, int) or isinstance(scoped_epoch, bool) or scoped_epoch < 0:
+            return False
+        if project_id != scoped_project or state_epoch != scoped_epoch:
+            return False
+    elif project_id is not None or state_epoch is not None:
+        # Global notices may render in Settings, but never masquerade as project-scoped state.
+        return False
+
     now = _utc(now or datetime.now(timezone.utc))
     dismissed_at = _utc(dismissed_at)
     if dismissed_at is None:
