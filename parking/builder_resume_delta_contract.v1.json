@@ -34,7 +34,17 @@
       "additionalProperties": false,
       "required": ["changed_paths", "manifest_hashes"],
       "properties": {
-        "changed_paths": {"type": "array", "maxItems": 500, "items": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^\\u0000]+$"}},
+        "changed_paths": {
+          "type": "array",
+          "maxItems": 500,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\\\)(?![A-Za-z]:)[^\\u0000]+$"
+          }
+        },
         "manifest_hashes": {"type": "object", "maxProperties": 32, "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
         "symbol_delta": {"type": "array", "maxItems": 1000, "items": {"type": "string", "maxLength": 512}}
       }
