@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "captain://memory/project-epoch/v1",
+  "title": "Captain Project Memory Epoch Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "scope", "kind", "created_at", "payload"],
+  "properties": {
+    "version": {"const": 1},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chat_id", "project_id", "state_epoch"],
+      "properties": {
+        "chat_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "project_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "repo_scope": {"type": ["string", "null"], "minLength": 1, "maxLength": 1024},
+        "state_epoch": {"type": "integer", "minimum": 0}
+      }
+    },
+    "kind": {"enum": ["project_memory", "project_context"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "payload": {"type": "object"}
+  }
+}
