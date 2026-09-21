@@ -7,7 +7,7 @@ state and never performs authentication, network calls, or paid API usage.
 
 AUTH_METHODS = {"none", "oauth", "api_key", "id_based", "local_session"}
 GOOD_AUTH = {"not_required", "valid"}
-GOOD_VERSION = {"unknown", "current"}
+GOOD_VERSION = {"current"}
 
 
 def evaluate(connector):
@@ -50,6 +50,8 @@ def evaluate(connector):
     if auth_method == "none" and auth_status != "not_required":
         auth_ok = False
 
+    # Version/capability health must be positively known. Treating `unknown` as good
+    # would let a stale provider silently remain Ready after an unobserved migration.
     ready = bool(
         installed and connected and enabled
         and health_status == "healthy"
