@@ -76,6 +76,14 @@ class FakeBuilderRuntimeAdapter:
         return {"checkpoint": s.checkpoint, "preview": s.preview_owner is not None,
                 "file_count": len(s.files), "log_count": len(s.logs)}
 
+    def list_files(self, scope: BuilderScope, prefix: str = "", limit: int = 1000) -> tuple[str, ...]:
+        s = self._owned(scope)
+        if prefix:
+            prefix = _safe_relpath(prefix)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 1000:
+            raise ScopeError("invalid file listing limit")
+        return tuple(p for p in sorted(s.files) if not prefix or p == prefix or p.startswith(prefix + "/"))[:limit]
+
     def write_file(self, scope: BuilderScope, path: str, content: str) -> None:
         s = self._owned(scope); path = _safe_relpath(path)
         if not isinstance(content, str) or len(content) > 2_000_000:
@@ -87,6 +95,12 @@ class FakeBuilderRuntimeAdapter:
         if path not in s.files:
             raise ScopeError("file is not owned by current builder session")
         return s.files[path]
+
+    def delete_file(self, scope: BuilderScope, path: str) -> None:
+        s = self._owned(scope); path = _safe_relpath(path)
+        if path not in s.files:
+            raise ScopeError("file is not owned by current builder session")
+        del s.files[path]
 
     def diff(self, scope: BuilderScope) -> dict[str, str]:
         s = self._owned(scope)
