@@ -1,5 +1,8 @@
 import unittest
-from builder_runtime_adapter_fake import BuilderScope, FakeBuilderRuntimeAdapter, ScopeError
+from builder_runtime_adapter_fake import (
+    BuilderScope, FakeBuilderRuntimeAdapter, ScopeError,
+    MAX_CHECKPOINTS, MAX_FILE_BYTES, MAX_LOG_EVENTS, MAX_SESSION_BYTES, MAX_SESSION_FILES,
+)
 
 
 class BuilderRuntimeIsolationTests(unittest.TestCase):
@@ -83,6 +86,37 @@ class BuilderRuntimeIsolationTests(unittest.TestCase):
             with self.assertRaises(ScopeError): self.rt.list_files(self.a, limit=bad_limit)
         for bad_prefix in ("../", "/abs", "a//b", "C:/secret", "a\\b"):
             with self.assertRaises(ScopeError): self.rt.list_files(self.a, bad_prefix)
+
+    def test_resource_quotas_bound_laptop_memory_growth(self):
+        # UTF-8 bytes, not Python character count: multibyte text cannot bypass quotas.
+        with self.assertRaises(ScopeError):
+            self.rt.write_file(self.a, "too-big.txt", "€" * (MAX_FILE_BYTES // 3 + 1))
+        self.rt.write_file(self.a, "base.txt", "x" * MAX_FILE_BYTES)
+        self.assertEqual(self.rt.inspect(self.a)["bytes_used"], MAX_FILE_BYTES)
+
+        # Exercise aggregate-byte quota without allocating the full production limit.
+        import builder_runtime_adapter_fake as mod
+        old_total = mod.MAX_SESSION_BYTES
+        try:
+            mod.MAX_SESSION_BYTES = MAX_FILE_BYTES + 10
+            with self.assertRaises(ScopeError):
+                self.rt.write_file(self.a, "overflow.txt", "y" * 11)
+        finally:
+            mod.MAX_SESSION_BYTES = old_total
+
+        # Exercise count quotas with temporary small limits to keep regressions fast/light.
+        old_files, old_logs, old_cps = mod.MAX_SESSION_FILES, mod.MAX_LOG_EVENTS, mod.MAX_CHECKPOINTS
+        try:
+            mod.MAX_SESSION_FILES = len(self.rt.list_files(self.a))
+            with self.assertRaises(ScopeError): self.rt.write_file(self.a, "extra.txt", "x")
+            mod.MAX_LOG_EVENTS = 1
+            self.rt.run(self.a, "one")
+            with self.assertRaises(ScopeError): self.rt.run(self.a, "two")
+            mod.MAX_CHECKPOINTS = 2  # includes checkpoint zero
+            self.rt.checkpoint(self.a)
+            with self.assertRaises(ScopeError): self.rt.checkpoint(self.a)
+        finally:
+            mod.MAX_SESSION_FILES, mod.MAX_LOG_EVENTS, mod.MAX_CHECKPOINTS = old_files, old_logs, old_cps
 
     def test_rollback_must_be_in_owned_history(self):
         self.assertEqual(self.rt.checkpoint(self.a), 1)
