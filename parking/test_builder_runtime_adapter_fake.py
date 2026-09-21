@@ -50,8 +50,18 @@ class BuilderRuntimeIsolationTests(unittest.TestCase):
         self.rt.rollback(self.a, cp)
         self.assertEqual(self.rt.read_file(self.a, "src/app.py"), "v1")
         with self.assertRaises(ScopeError): self.rt.read_file(self.a, "src/new.py")
-        self.assertEqual(self.rt.logs(self.a), ("fake-run:test-v1",))
+        self.assertEqual(self.rt.logs(self.a), ("fake-run:accepted",))
         self.assertEqual(self.rt.diff(self.a), {})
+
+    def test_run_never_persists_raw_command_or_secrets(self):
+        secret = "sk-test-super-secret"
+        command = f"OPENAI_API_KEY={secret} npm test -- --token={secret}"
+        self.assertEqual(self.rt.run(self.a, command), "fake-run:accepted")
+        persisted = "\n".join(self.rt.logs(self.a))
+        self.assertNotIn(secret, persisted)
+        self.assertNotIn("OPENAI_API_KEY", persisted)
+        self.assertNotIn("npm test", persisted)
+        self.assertEqual(persisted, "fake-run:accepted")
 
     def test_delete_is_diffed_and_rollback_restores_file(self):
         self.rt.write_file(self.a, "src/app.py", "v1")
