@@ -49,10 +49,11 @@ def main():
     boolean = deepcopy(expired); boolean["state_epoch"] = True; expect_error(boolean)
     partial = deepcopy(expired); partial.pop("repo_scope_hash"); expect_error(partial)
 
-    # Persistent notices must never accept provider-controlled external/open-redirect
-    # remediation targets or path traversal in Captain Settings deep links.
+    # Persistent notices must never accept provider-controlled external/open-redirect,
+    # traversal, or cross-connector remediation targets.
     external = deepcopy(expired); external["remediation"] = {"settings_section": "https://evil.example/login"}; expect_error(external)
     traversal = deepcopy(expired); traversal["remediation"] = {"settings_section": "settings/connectors/../secrets"}; expect_error(traversal)
+    cross_connector = deepcopy(expired); cross_connector["remediation"] = {"settings_section": "settings/connectors/slack/permissions"}; expect_error(cross_connector)
     bad_id = deepcopy(expired); bad_id["connector_id"] = "github/../../secrets"; expect_error(bad_id)
     valid_deep = deepcopy(expired); valid_deep["remediation"] = {"settings_section": "settings/connectors/github/permissions"}
     assert notice_for(valid_deep, NOW)["settings_section"] == "settings/connectors/github/permissions"
