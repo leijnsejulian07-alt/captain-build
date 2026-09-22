@@ -6,6 +6,7 @@ secret-derived strings belong in notice state. Project-bound notices are
 full-scope/epoch-bound and fail closed.
 """
 from datetime import datetime, timedelta, timezone
+import re
 
 try:
     from .connector_readiness import evaluate as evaluate_readiness
@@ -14,6 +15,7 @@ except ImportError:  # direct execution from parking/
 
 IMPORTANT = {"auth_expired", "auth_invalid", "reauth_required", "provider_deprecated", "migration_required", "setup_incomplete"}
 DEFAULT_REMINDER = timedelta(hours=24)
+CONNECTOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _utc(value):
@@ -26,10 +28,33 @@ def _utc(value):
     return value.astimezone(timezone.utc)
 
 
+def _connector_id(connector):
+    value = connector.get("connector_id")
+    if not isinstance(value, str) or not CONNECTOR_ID.fullmatch(value):
+        raise ValueError("connector_id must be a non-secret canonical slug")
+    return value
+
+
+def _settings_section(connector_id, remediation):
+    """Accept only Captain-internal connector Settings deep links.
+
+    Provider supplied URLs/paths must never become executable/navigation targets in
+    persistent notices. This also prevents path traversal or a connector payload from
+    turning a remediation banner into an external phishing/open-redirect surface.
+    """
+    default = f"settings/connectors/{connector_id}"
+    value = remediation.get("settings_section")
+    if value is None:
+        return default
+    if not isinstance(value, str) or not value.startswith("settings/connectors/"):
+        raise ValueError("settings_section must be a Captain connector Settings deep link")
+    suffix = value[len("settings/connectors/"):]
+    if not suffix or any(part in ("", ".", "..") for part in suffix.split("/")):
+        raise ValueError("invalid connector Settings deep link")
+    return value
+
+
 def _scope(connector):
-    # Keep connector notices on the same authority wall as Project Memory/context.
-    # Only the stable repo scope hash may persist/render; raw machine/repo paths must
-    # never enter notification state.
     keys = ("chat_id", "project_id", "repo_scope_hash", "state_epoch")
     values = tuple(connector.get(k) for k in keys)
     raw_repo_scope = connector.get("repo_scope")
@@ -46,14 +71,9 @@ def _scope(connector):
 
 
 def notice_for(connector, now=None):
-    """Return a secret-free persistent notice or None.
-
-    Readiness is derived by the canonical readiness evaluator. A persisted/provider
-    `ready` bit is never trusted to suppress remediation. Dismissal is temporary: an
-    unresolved important issue reappears after remind_after. Resolution clears it
-    automatically because positively derived healthy/ready state yields None.
-    """
+    """Return a secret-free persistent notice or None."""
     now = _utc(now or datetime.now(timezone.utc))
+    connector_id = _connector_id(connector)
     scope = _scope(connector)
     normalized = evaluate_readiness(connector)
     h = normalized["health"]
@@ -73,11 +93,11 @@ def notice_for(connector, now=None):
         return None
 
     remediation = connector.get("remediation") or {}
-    section = remediation.get("settings_section")
-    if not isinstance(section, str) or not section:
-        section = f"settings/connectors/{connector['connector_id']}"
+    if not isinstance(remediation, dict):
+        raise ValueError("remediation must be an object")
+    section = _settings_section(connector_id, remediation)
     notice = {
-        "connector_id": connector["connector_id"], "code": code,
+        "connector_id": connector_id, "code": code,
         "important": code in IMPORTANT, "settings_section": section,
         "remind_after": remediation.get("remind_after"), "generated_at": now.isoformat(),
     }
@@ -100,7 +120,6 @@ def visible(notice, dismissed_at=None, now=None, *, chat_id=None, project_id=Non
         if normalized is None or stored != requested:
             return False
     elif any(v is not None for v in requested):
-        # Global notices may render in Settings, but never masquerade as project state.
         return False
 
     now = _utc(now or datetime.now(timezone.utc))
