@@ -36,11 +36,11 @@ def _connector_id(connector):
 
 
 def _settings_section(connector_id, remediation):
-    """Accept only Captain-internal connector Settings deep links.
+    """Accept only deep links inside the owning connector's Settings subtree.
 
     Provider supplied URLs/paths must never become executable/navigation targets in
-    persistent notices. This also prevents path traversal or a connector payload from
-    turning a remediation banner into an external phishing/open-redirect surface.
+    persistent notices. Binding the first path segment to connector_id also prevents
+    one connector from steering remediation into another connector's settings.
     """
     default = f"settings/connectors/{connector_id}"
     value = remediation.get("settings_section")
@@ -49,8 +49,11 @@ def _settings_section(connector_id, remediation):
     if not isinstance(value, str) or not value.startswith("settings/connectors/"):
         raise ValueError("settings_section must be a Captain connector Settings deep link")
     suffix = value[len("settings/connectors/"):]
-    if not suffix or any(part in ("", ".", "..") for part in suffix.split("/")):
+    parts = suffix.split("/")
+    if not suffix or any(part in ("", ".", "..") for part in parts):
         raise ValueError("invalid connector Settings deep link")
+    if parts[0] != connector_id:
+        raise ValueError("settings_section must remain inside the owning connector subtree")
     return value
 
 
