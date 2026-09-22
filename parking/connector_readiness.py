@@ -16,6 +16,8 @@ def evaluate(connector):
     `ready` is always derived, never trusted from persisted/provider input.
     Unknown/malformed health or auth method cannot become Ready. Permissions are
     normalized to a sorted tuple of non-empty strings for deterministic UI state.
+    `blockers` is a secret-free ordered tuple suitable for persistent Settings UI
+    remediation; it contains only stable reason codes, never provider error text.
     """
     if not isinstance(connector, dict):
         raise TypeError("connector must be a dict")
@@ -52,6 +54,25 @@ def evaluate(connector):
     if auth_method == "none" and auth_status != "not_required":
         auth_ok = False
 
+    # Produce stable, non-secret remediation reasons in dependency order. The UI can
+    # map these codes to Connect/Test/Enable/migration actions without ever rendering
+    # raw provider diagnostics that could contain credentials or machine details.
+    blockers = []
+    if not installed:
+        blockers.append("not_installed")
+    elif not connected:
+        blockers.append("not_connected")
+    elif not enabled:
+        blockers.append("disabled")
+    if not auth_method_known:
+        blockers.append("auth_method_invalid")
+    elif not auth_ok:
+        blockers.append("auth_unhealthy")
+    if health_status != "healthy":
+        blockers.append("health_unhealthy")
+    if version_status != "current":
+        blockers.append("provider_compatibility_unverified")
+
     # Version/capability health must be positively known. Treating `unknown` as good
     # would let a stale provider silently remain Ready after an unobserved migration.
     ready = bool(
@@ -60,6 +81,8 @@ def evaluate(connector):
         and auth_ok
         and version_status in GOOD_VERSION
     )
+    if ready:
+        blockers = []
 
     return {
         "connector_id": connector_id,
@@ -69,6 +92,7 @@ def evaluate(connector):
         "ready": ready,
         "auth_method": auth_method,
         "permissions": permissions,
+        "blockers": tuple(blockers),
         "health": {
             "status": health_status,
             "auth_status": auth_status,
