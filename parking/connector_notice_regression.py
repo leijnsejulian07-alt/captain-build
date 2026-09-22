@@ -7,10 +7,7 @@ from connector_readiness import evaluate
 NOW = datetime(2026, 9, 22, 20, 0, tzinfo=timezone.utc)
 BASE = {
     "connector_id": "github",
-    "installed": True,
-    "connected": True,
-    "enabled": True,
-    "auth_method": "oauth",
+    "installed": True, "connected": True, "enabled": True, "auth_method": "oauth",
     "permissions": ["repo:read"],
     "health": {"status": "healthy", "auth_status": "valid", "provider_version_status": "current"},
     "chat_id": "chat-a", "project_id": "project-a", "repo_scope_hash": "sha256:repo-a", "state_epoch": 7,
@@ -25,43 +22,41 @@ def expect_error(value):
 
 def main():
     healthy = deepcopy(BASE)
-    # Prove the fixture is genuinely Ready, rather than merely producing no notice
-    # because an unmapped readiness blocker happened to be present.
     assert evaluate(healthy)["ready"] is True
     assert notice_for(healthy, NOW) is None
 
     expired = deepcopy(BASE)
     expired["health"]["auth_status"] = "expired"
-    expired["ready"] = True  # untrusted provider/persisted bit must not suppress notice
+    expired["ready"] = True
     assert evaluate(expired)["ready"] is False
     n = notice_for(expired, NOW)
     assert n["code"] == "auth_expired"
+    assert n["settings_section"] == "settings/connectors/github"
     assert "repo_scope" not in n
     assert visible(n, now=NOW, chat_id="chat-a", project_id="project-a", repo_scope_hash="sha256:repo-a", state_epoch=7)
     assert not visible(n, now=NOW, chat_id="chat-a", project_id="project-b", repo_scope_hash="sha256:repo-a", state_epoch=7)
     assert not visible(n, now=NOW, chat_id="chat-a", project_id="project-a", repo_scope_hash="sha256:repo-a", state_epoch=8)
 
-    # Unknown auth methods fail readiness closed and cannot be mistaken for healthy.
-    unknown_auth = deepcopy(BASE)
-    unknown_auth["auth_method"] = "future_magic"
+    unknown_auth = deepcopy(BASE); unknown_auth["auth_method"] = "future_magic"
     normalized = evaluate(unknown_auth)
-    assert normalized["ready"] is False
-    assert "auth_method_invalid" in normalized["blockers"]
+    assert normalized["ready"] is False and "auth_method_invalid" in normalized["blockers"]
 
-    # Dismissal is temporary and unresolved important notices return after 24h.
     assert not visible(n, dismissed_at=NOW, now=NOW + timedelta(hours=23), chat_id="chat-a", project_id="project-a", repo_scope_hash="sha256:repo-a", state_epoch=7)
     assert visible(n, dismissed_at=NOW, now=NOW + timedelta(hours=25), chat_id="chat-a", project_id="project-a", repo_scope_hash="sha256:repo-a", state_epoch=7)
 
-    raw = deepcopy(expired); raw["repo_scope"] = "C:/secret/repo"
-    expect_error(raw)
-    zero = deepcopy(expired); zero["state_epoch"] = 0
-    expect_error(zero)
-    boolean = deepcopy(expired); boolean["state_epoch"] = True
-    expect_error(boolean)
-    partial = deepcopy(expired); partial.pop("repo_scope_hash")
-    expect_error(partial)
+    raw = deepcopy(expired); raw["repo_scope"] = "C:/secret/repo"; expect_error(raw)
+    zero = deepcopy(expired); zero["state_epoch"] = 0; expect_error(zero)
+    boolean = deepcopy(expired); boolean["state_epoch"] = True; expect_error(boolean)
+    partial = deepcopy(expired); partial.pop("repo_scope_hash"); expect_error(partial)
 
-    # Global connector notices stay global and cannot masquerade as project state.
+    # Persistent notices must never accept provider-controlled external/open-redirect
+    # remediation targets or path traversal in Captain Settings deep links.
+    external = deepcopy(expired); external["remediation"] = {"settings_section": "https://evil.example/login"}; expect_error(external)
+    traversal = deepcopy(expired); traversal["remediation"] = {"settings_section": "settings/connectors/../secrets"}; expect_error(traversal)
+    bad_id = deepcopy(expired); bad_id["connector_id"] = "github/../../secrets"; expect_error(bad_id)
+    valid_deep = deepcopy(expired); valid_deep["remediation"] = {"settings_section": "settings/connectors/github/permissions"}
+    assert notice_for(valid_deep, NOW)["settings_section"] == "settings/connectors/github/permissions"
+
     global_connector = deepcopy(expired)
     for key in ("chat_id", "project_id", "repo_scope_hash", "state_epoch"):
         global_connector.pop(key)
