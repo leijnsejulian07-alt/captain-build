@@ -23,20 +23,28 @@ def base(**updates):
 
 def run():
     assert evaluate(base())["ready"] is True
+    assert evaluate(base())["blockers"] == ()
     # A forged persisted Ready cannot bypass disconnected/disabled state.
     assert evaluate(base(connected=False, ready=True))["ready"] is False
+    assert "not_connected" in evaluate(base(connected=False, ready=True))["blockers"]
     assert evaluate(base(enabled=False, ready=True))["ready"] is False
+    assert "disabled" in evaluate(base(enabled=False, ready=True))["blockers"]
 
     for auth in ("unknown", "expired", "invalid", "reauth_required", "not_required"):
         x = base(); x["health"] = dict(x["health"], auth_status=auth)
-        assert evaluate(x)["ready"] is False, auth
+        out = evaluate(x)
+        assert out["ready"] is False, auth
+        assert "auth_unhealthy" in out["blockers"], auth
     # Provider/version health must be positively current. Unknown is not evidence
     # of compatibility and therefore cannot preserve Ready across provider changes.
     for version in ("unknown", "deprecated", "migration_required"):
         x = base(); x["health"] = dict(x["health"], provider_version_status=version)
-        assert evaluate(x)["ready"] is False, version
+        out = evaluate(x)
+        assert out["ready"] is False, version
+        assert "provider_compatibility_unverified" in out["blockers"], version
     x = base(); x["health"] = dict(x["health"], status="degraded")
     assert evaluate(x)["ready"] is False
+    assert "health_unhealthy" in evaluate(x)["blockers"]
 
     # Local/no-auth connector requires explicit not_required health evidence.
     local = base(auth_method="none")
@@ -53,6 +61,23 @@ def run():
         out = evaluate(x)
         assert out["ready"] is False, method
         assert out["auth_method"] == "none"
+        assert "auth_method_invalid" in out["blockers"]
+
+    # Blockers are fixed reason codes only: raw provider diagnostics, tokens and
+    # machine-specific errors must never be reflected into Settings notices.
+    x = base()
+    x["health"] = {
+        "status": "broken: token=super-secret",
+        "auth_status": "expired: sk-secret",
+        "provider_version_status": "unknown: C:\\Users\\Julian",
+    }
+    out = evaluate(x)
+    assert out["ready"] is False
+    assert out["blockers"] == (
+        "auth_unhealthy", "health_unhealthy", "provider_compatibility_unverified"
+    )
+    assert "secret" not in repr(out["blockers"]).lower()
+    assert "julian" not in repr(out["blockers"]).lower()
 
     # Permissions normalize deterministically; malformed values do not leak through.
     out = evaluate(base(permissions=["write", "read", "read", "", None]))
