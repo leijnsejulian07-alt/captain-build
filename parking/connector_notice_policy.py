@@ -1,8 +1,9 @@
 """Pure-stdlib parking policy for Captain connector setup/health notices.
 
 Production integration should adapt these semantics into Captain's canonical Settings
-registry. No credentials, tokens, provider payloads, or secret-derived strings belong
-in notice state. Project-bound notices are full-scope/epoch-bound and fail closed.
+registry. No credentials, tokens, provider payloads, raw repository paths, or
+secret-derived strings belong in notice state. Project-bound notices are
+full-scope/epoch-bound and fail closed.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -21,15 +22,21 @@ def _utc(value):
 
 
 def _scope(connector):
-    keys = ("chat_id", "project_id", "repo_scope", "state_epoch")
+    # Keep connector notices on the same authority wall as Project Memory/context.
+    # Only the stable repo scope hash may persist/render; raw machine/repo paths must
+    # never enter notification state.
+    keys = ("chat_id", "project_id", "repo_scope_hash", "state_epoch")
     values = tuple(connector.get(k) for k in keys)
+    raw_repo_scope = connector.get("repo_scope")
+    if raw_repo_scope is not None:
+        raise ValueError("raw repo_scope is forbidden; use repo_scope_hash")
     if all(v is None for v in values):
         return None
-    chat_id, project_id, repo_scope, epoch = values
-    if not all(isinstance(v, str) and v for v in (chat_id, project_id, repo_scope)):
-        raise ValueError("project connector notices require chat_id + project_id + repo_scope + state_epoch")
-    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
-        raise ValueError("project connector notices require a non-negative integer state_epoch")
+    chat_id, project_id, repo_scope_hash, epoch = values
+    if not all(isinstance(v, str) and v for v in (chat_id, project_id, repo_scope_hash)):
+        raise ValueError("project connector notices require chat_id + project_id + repo_scope_hash + state_epoch")
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+        raise ValueError("project connector notices require a positive integer state_epoch")
     return dict(zip(keys, values))
 
 
@@ -71,12 +78,12 @@ def notice_for(connector, now=None):
     return notice
 
 
-def visible(notice, dismissed_at=None, now=None, *, chat_id=None, project_id=None, repo_scope=None, state_epoch=None):
+def visible(notice, dismissed_at=None, now=None, *, chat_id=None, project_id=None, repo_scope_hash=None, state_epoch=None):
     if notice is None:
         return False
-    keys = ("chat_id", "project_id", "repo_scope", "state_epoch")
+    keys = ("chat_id", "project_id", "repo_scope_hash", "state_epoch")
     stored = tuple(notice.get(k) for k in keys)
-    requested = (chat_id, project_id, repo_scope, state_epoch)
+    requested = (chat_id, project_id, repo_scope_hash, state_epoch)
     if any(v is not None for v in stored):
         try:
             normalized = _scope(notice)
