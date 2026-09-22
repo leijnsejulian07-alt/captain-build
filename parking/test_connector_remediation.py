@@ -11,11 +11,7 @@ def healthy(**overrides):
         "enabled": True,
         "auth_method": "oauth",
         "permissions": ["repo:read"],
-        "health": {
-            "status": "healthy",
-            "auth_status": "valid",
-            "provider_version_status": "current",
-        },
+        "health": {"status": "healthy", "auth_status": "valid", "provider_version_status": "current"},
     }
     c.update(overrides)
     return c
@@ -26,37 +22,24 @@ def test_ready_has_no_actions():
 
 
 def test_order_and_deep_links_are_stable():
-    actions = remediation({
-        "connector_id": "github",
-        "ready": False,
-        "blockers": ("not_connected", "auth_unhealthy", "provider_compatibility_unverified"),
-    })
+    actions = remediation({"connector_id": "github", "ready": False,
+        "blockers": ("not_connected", "auth_unhealthy", "provider_compatibility_unverified")})
     assert [a["action"] for a in actions] == ["connect", "reconnect", "review_provider"]
     assert all(a["deep_link"] == "settings/connectors/github" for a in actions)
 
 
 def test_expired_auth_maps_to_reconnect_without_provider_text():
     c = healthy()
-    c["health"] = {
-        "status": "healthy",
-        "auth_status": "expired",
-        "provider_version_status": "current",
-        "provider_error": "token=super-secret C:/Users/private/key.txt",
-    }
+    c["health"] = {"status": "healthy", "auth_status": "expired", "provider_version_status": "current",
+        "provider_error": "token=super-secret C:/Users/private/key.txt"}
     actions = remediation(evaluate(c))
     assert [a["action"] for a in actions] == ["reconnect"]
-    rendered = repr(actions)
-    assert "super-secret" not in rendered
-    assert "C:/Users" not in rendered
+    assert "super-secret" not in repr(actions) and "C:/Users" not in repr(actions)
 
 
 def test_unknown_provider_version_fails_closed_to_review():
     c = healthy()
-    c["health"] = {
-        "status": "healthy",
-        "auth_status": "valid",
-        "provider_version_status": "unknown",
-    }
+    c["health"] = {"status": "healthy", "auth_status": "valid", "provider_version_status": "unknown"}
     state = evaluate(c)
     assert state["ready"] is False
     assert [a["action"] for a in remediation(state)] == ["review_provider"]
@@ -64,22 +47,36 @@ def test_unknown_provider_version_fails_closed_to_review():
 
 def test_malformed_auth_method_cannot_become_ready():
     state = evaluate(healthy(auth_method="future_magic_auth"))
-    assert state["ready"] is False
-    assert "auth_method_invalid" in state["blockers"]
+    assert state["ready"] is False and "auth_method_invalid" in state["blockers"]
     assert remediation(state)[0]["action"] == "review_setup"
 
 
 def test_unknown_blocker_fails_closed_without_reflecting_payload():
     injected = "token=SECRET C:\\Users\\name\\key.txt"
     actions = remediation({"connector_id": "x", "ready": False, "blockers": (injected,)})
-    assert actions[0]["reason"] == "unknown_blocker"
-    assert actions[0]["action"] == "review_setup"
-    assert injected not in repr(actions)
-    assert "SECRET" not in repr(actions)
+    assert actions[0]["reason"] == "unknown_blocker" and actions[0]["action"] == "review_setup"
+    assert injected not in repr(actions) and "SECRET" not in repr(actions)
 
 
 def test_malformed_blockers_do_not_become_actions():
     assert remediation({"connector_id": "x", "ready": False, "blockers": "auth_unhealthy"}) == ()
+
+
+def test_connector_id_cannot_inject_deep_link_path_or_query():
+    bad_ids = ("../github", "github/../../admin", "github?token=SECRET", "github#frag", " github", "")
+    for connector_id in bad_ids:
+        try:
+            remediation({"connector_id": connector_id, "ready": False, "blockers": ("not_connected",)})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe connector id accepted: {connector_id!r}")
+
+
+def test_safe_connector_id_charset_remains_usable():
+    actions = remediation({"connector_id": "github-enterprise.v2_local", "ready": False,
+        "blockers": ("not_connected",)})
+    assert actions[0]["deep_link"] == "settings/connectors/github-enterprise.v2_local"
 
 
 if __name__ == "__main__":
