@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "captain://memory/project-epoch/v1",
   "title": "Captain Project Memory Epoch Envelope v1",
+  "description": "Parking contract for fail-closed project-scoped memory/context. Local integration remains unverified until reconciled on the Captain laptop.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "scope", "kind", "created_at", "payload"],
@@ -10,16 +11,45 @@
     "scope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["chat_id", "project_id", "state_epoch"],
+      "required": ["chat_id", "project_id", "repo_scope_hash", "state_epoch"],
       "properties": {
         "chat_id": {"type": "string", "minLength": 1, "maxLength": 256},
         "project_id": {"type": "string", "minLength": 1, "maxLength": 256},
-        "repo_scope": {"type": ["string", "null"], "minLength": 1, "maxLength": 1024},
-        "state_epoch": {"type": "integer", "minimum": 0}
+        "repo_scope_hash": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "description": "Canonical non-reversible repository-scope hash; never a raw local path."
+        },
+        "state_epoch": {"type": "integer", "minimum": 1}
       }
     },
     "kind": {"enum": ["project_memory", "project_context"]},
     "created_at": {"type": "string", "format": "date-time"},
     "payload": {"type": "object"}
-  }
+  },
+  "x-captain-read-policy": {
+    "authority": "chat_id + project_id + repo_scope_hash + current Project State state_epoch must exactly match",
+    "on_missing_malformed_or_stale_authority": "deny and return no project-scoped memory/context",
+    "no_fallback": "never fall back to another project, repository, previous epoch, or unscoped namespace",
+    "context_injection": "Project State and Project Memory injected into an LLM turn must originate from the same current epoch",
+    "non_project_chat": "ordinary non-project chat remains supported without synthesizing a project epoch"
+  },
+  "x-captain-write-policy": {
+    "commit_time_revalidation": "revalidate full authority immediately before persistence so an in-flight stale write cannot land after an epoch change",
+    "legacy_records": "project-scoped records lacking a valid epoch are legacy-stale; do not bulk-upgrade or implicitly copy them into a new epoch",
+    "credential_gate": "retain existing credential-like content rejection and secret-safe audit behavior"
+  },
+  "x-captain-required-regressions": [
+    "current full authority reads current project memory",
+    "epoch change makes prior memory/context inaccessible",
+    "in-flight old-epoch write is rejected after epoch change",
+    "wrong chat_id fails closed",
+    "wrong project_id fails closed",
+    "wrong repo_scope_hash fails closed",
+    "missing or malformed epoch fails closed",
+    "context assembler cannot inject stale project memory after epoch change",
+    "new epoch does not implicitly inherit old-epoch project memory",
+    "normal non-project chat remains functional without state_epoch"
+  ]
 }
