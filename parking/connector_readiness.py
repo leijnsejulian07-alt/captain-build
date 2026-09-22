@@ -14,8 +14,8 @@ def evaluate(connector):
     """Return normalized Installed/Connected/Enabled/Ready state, fail closed.
 
     `ready` is always derived, never trusted from persisted/provider input.
-    Unknown/malformed health cannot become Ready. Permissions are normalized to a
-    sorted tuple of non-empty strings so UI comparisons are deterministic.
+    Unknown/malformed health or auth method cannot become Ready. Permissions are
+    normalized to a sorted tuple of non-empty strings for deterministic UI state.
     """
     if not isinstance(connector, dict):
         raise TypeError("connector must be a dict")
@@ -26,9 +26,11 @@ def evaluate(connector):
     installed = connector.get("installed") is True
     connected = installed and connector.get("connected") is True
     enabled = connected and connector.get("enabled") is True
-    auth_method = connector.get("auth_method")
-    if auth_method not in AUTH_METHODS:
-        auth_method = "none"
+    raw_auth_method = connector.get("auth_method")
+    auth_method_known = raw_auth_method in AUTH_METHODS
+    # Preserve a safe display value but retain validity separately. Coercing an
+    # unknown method to `none` must never turn malformed provider state into Ready.
+    auth_method = raw_auth_method if auth_method_known else "none"
 
     raw_permissions = connector.get("permissions", [])
     if not isinstance(raw_permissions, (list, tuple)):
@@ -44,7 +46,7 @@ def evaluate(connector):
 
     # Auth-bearing connectors may never be Ready with unknown auth. `none` is only
     # Ready when the provider explicitly reports auth as not_required.
-    auth_ok = auth_status in GOOD_AUTH
+    auth_ok = auth_method_known and auth_status in GOOD_AUTH
     if auth_method != "none" and auth_status == "not_required":
         auth_ok = False
     if auth_method == "none" and auth_status != "not_required":
