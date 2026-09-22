@@ -51,16 +51,29 @@ class BuilderPublicationGuardTests(unittest.TestCase):
                 digest = ""
             self.deny(digest=digest)
 
-    def test_diff_paths_cannot_escape_repo_scope(self):
-        for path in ("../secret", "/abs", "a//b", "a/./b", "a/../b", "C:/secret", "a\\b", ""):
+    def test_diff_paths_cannot_escape_or_confuse_repo_scope(self):
+        bad = ("../secret", "/abs", "a//b", "a/./b", "a/../b", "C:/secret", "a\\b", "",
+               "src/evil\nname.py", "src/evil\x00name.py", "src/evil\x7fname.py", "x" * 4097)
+        for path in bad:
             with self.assertRaises(PublicationDenied):
                 publication_digest(authority=self.a, diff={path: "x"})
 
     def test_malformed_authority_fails_closed(self):
-        for current in (self.mutate(chat_id=""), self.mutate(repo_scope=" "),
-                        self.mutate(state_epoch=True), self.mutate(state_epoch=-1),
-                        self.mutate(checkpoint=True), self.mutate(checkpoint=-1)):
+        bad = (self.mutate(chat_id=""), self.mutate(repo_scope=" "), self.mutate(project_id="p\nother"),
+               self.mutate(builder_session_id="session\x00other"), self.mutate(chat_id="x" * 4097),
+               self.mutate(state_epoch=True), self.mutate(state_epoch=-1),
+               self.mutate(checkpoint=True), self.mutate(checkpoint=-1))
+        for current in bad:
             self.deny(current=current)
+
+    def test_review_receipt_is_domain_separated_from_raw_field_hash(self):
+        import hashlib
+        raw = hashlib.sha256()
+        for value in (self.a.chat_id, self.a.project_id, self.a.repo_scope, self.a.builder_session_id,
+                      str(self.a.state_epoch), str(self.a.checkpoint), "src/app.py", "v2"):
+            encoded = value.encode("utf-8")
+            raw.update(len(encoded).to_bytes(8, "big")); raw.update(encoded)
+        self.assertNotEqual(self.digest(), raw.hexdigest())
 
 
 if __name__ == "__main__":
