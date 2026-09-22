@@ -7,6 +7,11 @@ full-scope/epoch-bound and fail closed.
 """
 from datetime import datetime, timedelta, timezone
 
+try:
+    from .connector_readiness import evaluate as evaluate_readiness
+except ImportError:  # direct execution from parking/
+    from connector_readiness import evaluate as evaluate_readiness
+
 IMPORTANT = {"auth_expired", "auth_invalid", "reauth_required", "provider_deprecated", "migration_required", "setup_incomplete"}
 DEFAULT_REMINDER = timedelta(hours=24)
 
@@ -43,13 +48,16 @@ def _scope(connector):
 def notice_for(connector, now=None):
     """Return a secret-free persistent notice or None.
 
-    Dismissal is temporary: an unresolved important issue reappears after remind_after.
-    Resolution clears it automatically because healthy/ready state yields None.
+    Readiness is derived by the canonical readiness evaluator. A persisted/provider
+    `ready` bit is never trusted to suppress remediation. Dismissal is temporary: an
+    unresolved important issue reappears after remind_after. Resolution clears it
+    automatically because positively derived healthy/ready state yields None.
     """
     now = _utc(now or datetime.now(timezone.utc))
     scope = _scope(connector)
-    h = connector["health"]
-    if connector.get("ready") and h.get("status") == "healthy":
+    normalized = evaluate_readiness(connector)
+    h = normalized["health"]
+    if normalized["ready"]:
         return None
 
     code = None
@@ -60,7 +68,7 @@ def notice_for(connector, now=None):
     elif auth == "reauth_required": code = "reauth_required"
     elif version == "migration_required": code = "migration_required"
     elif version == "deprecated": code = "provider_deprecated"
-    elif connector.get("installed") and not connector.get("connected"): code = "setup_incomplete"
+    elif normalized.get("installed") and not normalized.get("connected"): code = "setup_incomplete"
     if code is None:
         return None
 
