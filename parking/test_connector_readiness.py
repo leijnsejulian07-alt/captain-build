@@ -45,6 +45,15 @@ def run():
     local["health"] = dict(local["health"], auth_status="unknown")
     assert evaluate(local)["ready"] is False
 
+    # Unknown/malformed auth methods must not be coerced into a Ready no-auth
+    # connector, even when all other health evidence looks healthy/current.
+    for method in (None, "", "magic", 123):
+        x = base(auth_method=method)
+        x["health"] = dict(x["health"], auth_status="not_required")
+        out = evaluate(x)
+        assert out["ready"] is False, method
+        assert out["auth_method"] == "none"
+
     # Permissions normalize deterministically; malformed values do not leak through.
     out = evaluate(base(permissions=["write", "read", "read", "", None]))
     assert out["permissions"] == ("read", "write")
