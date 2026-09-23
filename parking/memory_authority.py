@@ -24,8 +24,11 @@ class MemoryAuthority:
 
     @classmethod
     def parse(cls, value: Mapping[str, Any]) -> "MemoryAuthority":
-        if not isinstance(value, Mapping):
-            raise MemoryAuthorityError("authority must be a mapping")
+        # Authority crosses a trust boundary. Accept only an inert builtin dict:
+        # arbitrary Mapping implementations may execute caller code from
+        # __iter__/__getitem__ while Captain is validating Project State.
+        if type(value) is not dict:
+            raise MemoryAuthorityError("authority must be a builtin dict")
         allowed = {"chat_id", "project_id", "repo_scope_hash", "state_epoch"}
         if set(value) != allowed:
             raise MemoryAuthorityError("authority fields must match the canonical tuple")
