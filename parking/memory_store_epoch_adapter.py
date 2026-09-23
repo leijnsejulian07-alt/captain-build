@@ -15,6 +15,7 @@ from memory_authority import MemoryAuthority, MemoryAuthorityError
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 10_000
 MAX_STRING_CHARS = 1_000_000
+MAX_TOTAL_TEXT_CHARS = 4_000_000
 MAX_KEY_CHARS = 512
 MAX_PROVENANCE_CHARS = 512
 MAX_RECORDS_PER_AUTHORITY = 2_048
@@ -28,10 +29,13 @@ class MemoryRecord:
     provenance: Mapping[str, Any]
 
 
-def _snapshot_json(value: Any, *, depth: int = 0, budget: list[int] | None = None) -> Any:
+def _snapshot_json(value: Any, *, depth: int = 0, budget: list[int] | None = None,
+                   text_budget: list[int] | None = None) -> Any:
     """Copy bounded inert JSON data without invoking caller-defined hooks."""
     if budget is None:
         budget = [MAX_JSON_NODES]
+    if text_budget is None:
+        text_budget = [MAX_TOTAL_TEXT_CHARS]
     budget[0] -= 1
     if budget[0] < 0:
         raise MemoryAuthorityError("memory value exceeds node budget")
@@ -49,9 +53,13 @@ def _snapshot_json(value: Any, *, depth: int = 0, budget: list[int] | None = Non
     if value_type is str:
         if len(value) > MAX_STRING_CHARS:
             raise MemoryAuthorityError("memory string too large")
+        text_budget[0] -= len(value)
+        if text_budget[0] < 0:
+            raise MemoryAuthorityError("memory value exceeds aggregate text budget")
         return value
     if value_type is list:
-        return [_snapshot_json(item, depth=depth + 1, budget=budget) for item in value]
+        return [_snapshot_json(item, depth=depth + 1, budget=budget,
+                               text_budget=text_budget) for item in value]
     if value_type is dict:
         out: dict[str, Any] = {}
         for key, item in value.items():
@@ -59,7 +67,11 @@ def _snapshot_json(value: Any, *, depth: int = 0, budget: list[int] | None = Non
                 raise MemoryAuthorityError("memory object keys must be plain strings")
             if len(key) > MAX_KEY_CHARS:
                 raise MemoryAuthorityError("memory object key too large")
-            out[key] = _snapshot_json(item, depth=depth + 1, budget=budget)
+            text_budget[0] -= len(key)
+            if text_budget[0] < 0:
+                raise MemoryAuthorityError("memory value exceeds aggregate text budget")
+            out[key] = _snapshot_json(item, depth=depth + 1, budget=budget,
+                                      text_budget=text_budget)
         return out
     raise MemoryAuthorityError("memory value must be inert plain JSON-shaped data")
 
