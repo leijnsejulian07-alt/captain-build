@@ -1,6 +1,6 @@
 """Regressions for the epoch-bound project memory/context adapter."""
 from memory_authority import MemoryAuthorityError
-from memory_store_epoch_adapter import EpochBoundMemoryStore
+from memory_store_epoch_adapter import EpochBoundMemoryStore, MAX_JSON_NODES
 
 H1 = "1" * 64
 H2 = "2" * 64
@@ -11,6 +11,15 @@ def changed(field, value):
     result = dict(BASE)
     result[field] = value
     return result
+
+
+def must_reject(store, value):
+    try:
+        store.write_project(BASE, key="unsafe", value=value,
+                            provenance={"source": "captain", "kind": "derived"})
+    except MemoryAuthorityError:
+        return
+    raise AssertionError(f"unsafe memory value accepted: {type(value).__name__}")
 
 
 def run():
@@ -63,37 +72,27 @@ def run():
         else:
             raise AssertionError(f"bad provenance accepted: {bad!r}")
 
-    # Memory values must be inert JSON-shaped data. In particular, do not invoke
-    # arbitrary caller-defined __deepcopy__ hooks at the trust boundary.
     class HostileValue:
         called = False
         def __deepcopy__(self, memo):
             type(self).called = True
             raise AssertionError("untrusted copy hook executed")
 
-    for bad_value in (HostileValue(), {"bad": HostileValue()}, {1: "non-string-key"}, {"x": (1, 2)}):
-        try:
-            store.write_project(BASE, key="unsafe", value=bad_value,
-                                provenance={"source": "captain", "kind": "derived"})
-        except MemoryAuthorityError:
-            pass
-        else:
-            raise AssertionError(f"unsafe memory value accepted: {bad_value!r}")
+    for bad_value in (HostileValue(), {"bad": HostileValue()}, {1: "non-string-key"}, {"x": (1, 2)},
+                      float("nan"), float("inf"), float("-inf")):
+        must_reject(store, bad_value)
     assert HostileValue.called is False
 
     too_deep = 0
     for _ in range(34):
         too_deep = [too_deep]
-    try:
-        store.write_project(BASE, key="deep", value=too_deep,
-                            provenance={"source": "captain", "kind": "derived"})
-    except MemoryAuthorityError:
-        pass
-    else:
-        raise AssertionError("excessively nested memory accepted")
+    must_reject(store, too_deep)
+
+    # Width matters as much as nesting: bound total work/memory per value.
+    must_reject(store, [0] * (MAX_JSON_NODES + 1))
 
     assert len(tuple(store.all_records_for_test_only())) == 1
-    print("PASS: project memory is epoch-bound, inert, provenance-gated and mutation-isolated")
+    print("PASS: project memory is epoch-bound, bounded, inert, provenance-gated and mutation-isolated")
 
 
 if __name__ == "__main__":
