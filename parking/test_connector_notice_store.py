@@ -1,4 +1,4 @@
-from connector_notice_store import ConnectorNoticeStore
+from connector_notice_store import ConnectorNoticeStore, MAX_ACTIVE_CODES_PER_CONNECTOR
 
 
 def test_notice_is_scoped_snoozable_and_resurfaces():
@@ -92,3 +92,26 @@ def test_empty_reconcile_still_validates_scope_and_connector_before_state_access
             raise AssertionError("invalid reconciliation authority accepted")
 
     assert store.visible("a", 2)[0]["code"] == "auth_expired"
+
+
+def test_reconcile_rejects_blank_or_excessive_codes_atomically():
+    store = ConnectorNoticeStore()
+    store.reconcile("a", "github", ("auth_expired",), now=1)
+
+    invalid_sets = (
+        ("",),
+        tuple(f"code-{i}" for i in range(MAX_ACTIVE_CODES_PER_CONNECTOR + 1)),
+    )
+    for codes in invalid_sets:
+        try:
+            store.reconcile("a", "github", codes, now=2)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid connector notice set accepted")
+
+    assert store.visible("a", 2) == ({
+        "connector_id": "github",
+        "code": "auth_expired",
+        "settings_deep_link": "settings://connectors/github",
+    },)
