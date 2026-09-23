@@ -47,3 +47,29 @@ def test_non_plain_active_codes_fail_closed():
         pass
     else:
         raise AssertionError("mutable/untrusted active code container accepted")
+
+
+def test_non_finite_timestamps_fail_closed_without_mutating_state():
+    store = ConnectorNoticeStore()
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        try:
+            store.reconcile("a", "github", ("auth_expired",), now=bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("non-finite reconcile timestamp accepted")
+    assert store.visible("a", 1) == ()
+
+    store.reconcile("a", "github", ("auth_expired",), now=1)
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        for operation in (
+            lambda: store.visible("a", bad),
+            lambda: store.dismiss_temporarily("a", "github", "auth_expired", bad),
+        ):
+            try:
+                operation()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("non-finite notice timestamp accepted")
+    assert store.visible("a", 1)
