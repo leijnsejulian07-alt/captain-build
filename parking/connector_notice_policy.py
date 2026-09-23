@@ -36,12 +36,7 @@ def _connector_id(connector):
 
 
 def _settings_section(connector_id, remediation):
-    """Accept only deep links inside the owning connector's Settings subtree.
-
-    Provider supplied URLs/paths must never become executable/navigation targets in
-    persistent notices. Binding the first path segment to connector_id also prevents
-    one connector from steering remediation into another connector's settings.
-    """
+    """Accept only deep links inside the owning connector's Settings subtree."""
     default = f"settings/connectors/{connector_id}"
     value = remediation.get("settings_section")
     if value is None:
@@ -57,11 +52,26 @@ def _settings_section(connector_id, remediation):
     return value
 
 
+def _remind_after(remediation):
+    """Normalize provider metadata to a secret-free UTC ISO timestamp or None."""
+    value = remediation.get("remind_after")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("remind_after must be an ISO-8601 timestamp string")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("invalid remind_after timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("remind_after must include a timezone")
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def _scope(connector):
     keys = ("chat_id", "project_id", "repo_scope_hash", "state_epoch")
     values = tuple(connector.get(k) for k in keys)
-    raw_repo_scope = connector.get("repo_scope")
-    if raw_repo_scope is not None:
+    if connector.get("repo_scope") is not None:
         raise ValueError("raw repo_scope is forbidden; use repo_scope_hash")
     if all(v is None for v in values):
         return None
@@ -98,11 +108,12 @@ def notice_for(connector, now=None):
     remediation = connector.get("remediation") or {}
     if not isinstance(remediation, dict):
         raise ValueError("remediation must be an object")
-    section = _settings_section(connector_id, remediation)
     notice = {
         "connector_id": connector_id, "code": code,
-        "important": code in IMPORTANT, "settings_section": section,
-        "remind_after": remediation.get("remind_after"), "generated_at": now.isoformat(),
+        "important": code in IMPORTANT,
+        "settings_section": _settings_section(connector_id, remediation),
+        "remind_after": _remind_after(remediation),
+        "generated_at": now.isoformat(),
     }
     if scope is not None:
         notice.update(scope)
@@ -118,23 +129,31 @@ def visible(notice, dismissed_at=None, now=None, *, chat_id=None, project_id=Non
     if any(v is not None for v in stored):
         try:
             normalized = _scope(notice)
-        except ValueError:
+        except (ValueError, TypeError):
             return False
         if normalized is None or stored != requested:
             return False
     elif any(v is not None for v in requested):
         return False
 
-    now = _utc(now or datetime.now(timezone.utc))
-    dismissed_at = _utc(dismissed_at)
+    try:
+        now = _utc(now or datetime.now(timezone.utc))
+        dismissed_at = _utc(dismissed_at)
+    except (ValueError, TypeError):
+        return False
     if dismissed_at is None:
         return True
     raw = notice.get("remind_after")
-    if raw:
-        try:
-            deadline = datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
-        except (ValueError, AttributeError):
-            deadline = dismissed_at + DEFAULT_REMINDER
-    else:
+    if raw is None:
         deadline = dismissed_at + DEFAULT_REMINDER
+    elif not isinstance(raw, str):
+        return False
+    else:
+        try:
+            deadline = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if deadline.tzinfo is None:
+                return False
+            deadline = deadline.astimezone(timezone.utc)
+        except ValueError:
+            return False
     return now >= deadline
