@@ -16,14 +16,29 @@ def changed(field, value):
 def run():
     store = EpochBoundMemoryStore()
     provenance = {"source": "captain", "kind": "user-confirmed"}
-    store.write_project(BASE, key="decision", value="use adapter", provenance=provenance)
+    mutable_value = {"choice": "use adapter", "tags": ["safe"]}
+    store.write_project(BASE, key="decision", value=mutable_value, provenance=provenance)
+
+    # Mutating caller-owned objects after authorization must not rewrite stored memory.
+    mutable_value["choice"] = "tampered"
+    mutable_value["tags"].append("leak")
+    provenance["source"] = "tampered"
 
     visible = store.read_project(BASE)
     assert len(visible) == 1
-    assert visible[0].value == "use adapter"
-    assert visible[0].provenance == provenance
+    assert visible[0].value == {"choice": "use adapter", "tags": ["safe"]}
+    assert visible[0].provenance == {"source": "captain", "kind": "user-confirmed"}
+
+    # Read/context results are detached snapshots too; consumers cannot mutate the store.
+    visible[0].value["tags"].append("consumer-mutation")
+    context = store.build_context(BASE)
+    context[0]["value"]["tags"].append("context-mutation")
     assert store.build_context(BASE) == (
-        {"key": "decision", "value": "use adapter", "provenance": provenance},
+        {
+            "key": "decision",
+            "value": {"choice": "use adapter", "tags": ["safe"]},
+            "provenance": {"source": "captain", "kind": "user-confirmed"},
+        },
     )
 
     # Exact wall: stale memory AND context disappear after any authority change.
@@ -51,10 +66,24 @@ def run():
     else:
         raise AssertionError("malformed project-memory write must fail closed")
 
+    # Provenance is mandatory and canonical: no untraceable or surprise metadata.
+    for bad in (
+        {},
+        {"source": "captain"},
+        {"source": "captain", "kind": "user-confirmed", "secret": "must-not-persist"},
+        {"source": "", "kind": "user-confirmed"},
+    ):
+        try:
+            store.write_project(BASE, key="bad", value=1, provenance=bad)
+        except MemoryAuthorityError:
+            pass
+        else:
+            raise AssertionError(f"bad provenance accepted: {bad!r}")
+
     # Old record remains physically present for retention/migration, but cannot leak
     # through current reads/context after epoch rollover.
     assert len(tuple(store.all_records_for_test_only())) == 1
-    print("PASS: project memory read/write/context are epoch-bound and fail-closed")
+    print("PASS: project memory is epoch-bound, provenance-gated and mutation-isolated")
 
 
 if __name__ == "__main__":
