@@ -73,3 +73,22 @@ def test_non_finite_timestamps_fail_closed_without_mutating_state():
             else:
                 raise AssertionError("non-finite notice timestamp accepted")
     assert store.visible("a", 1)
+
+
+def test_empty_reconcile_still_validates_scope_and_connector_before_state_access():
+    store = ConnectorNoticeStore()
+    store.reconcile("a", "github", ("auth_expired",), now=1)
+
+    class HostileStr(str):
+        def strip(self, *args, **kwargs):
+            raise AssertionError("hostile string hook executed")
+
+    for scope, connector in (("", "github"), ("a", ""), (HostileStr("a"), "github"), ("a", HostileStr("github"))):
+        try:
+            store.reconcile(scope, connector, (), now=2)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid reconciliation authority accepted")
+
+    assert store.visible("a", 2)[0]["code"] == "auth_expired"
