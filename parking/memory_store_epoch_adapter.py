@@ -17,6 +17,7 @@ MAX_JSON_NODES = 10_000
 MAX_STRING_CHARS = 1_000_000
 MAX_KEY_CHARS = 512
 MAX_PROVENANCE_CHARS = 512
+MAX_RECORDS_PER_AUTHORITY = 2_048
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,8 +91,20 @@ class EpochBoundMemoryStore:
                                 limit=MAX_PROVENANCE_CHARS)
         kind = _bounded_label(provenance["kind"], field="provenance kind",
                               limit=MAX_PROVENANCE_CHARS)
-        self._records.append(MemoryRecord(auth, clean_key, _snapshot_json(value),
-                                          {"source": source, "kind": kind}))
+        incoming = MemoryRecord(auth, clean_key, _snapshot_json(value),
+                                {"source": source, "kind": kind})
+
+        # Cardinality is authority-local. Rewriting a key is a deterministic
+        # replacement, not context inflation; unrelated authorities are untouched.
+        matching = [i for i, record in enumerate(self._records)
+                    if auth.permits(record.authority)]
+        for index in matching:
+            if self._records[index].key == clean_key:
+                self._records[index] = incoming
+                return
+        if len(matching) >= MAX_RECORDS_PER_AUTHORITY:
+            raise MemoryAuthorityError("project memory authority exceeds record budget")
+        self._records.append(incoming)
 
     def read_project(self, current: Mapping[str, Any]) -> tuple[MemoryRecord, ...]:
         """Return detached records with exact current authority; malformed state fails closed."""
