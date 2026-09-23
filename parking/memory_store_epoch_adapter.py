@@ -6,7 +6,6 @@ native or OSS memory providers must preserve.
 """
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -19,6 +18,24 @@ class MemoryRecord:
     key: str
     value: Any
     provenance: Mapping[str, Any]
+
+
+def _snapshot_json(value: Any, *, depth: int = 0) -> Any:
+    """Copy only inert JSON-shaped values; never invoke caller-defined copy hooks."""
+    if depth > 32:
+        raise MemoryAuthorityError("memory value nesting too deep")
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_snapshot_json(item, depth=depth + 1) for item in value]
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise MemoryAuthorityError("memory object keys must be strings")
+            out[key] = _snapshot_json(item, depth=depth + 1)
+        return out
+    raise MemoryAuthorityError("memory value must be inert JSON-shaped data")
 
 
 class EpochBoundMemoryStore:
@@ -47,13 +64,11 @@ class EpochBoundMemoryStore:
             raise MemoryAuthorityError("provenance source required")
         if not isinstance(kind, str) or not kind.strip():
             raise MemoryAuthorityError("provenance kind required")
-        # Snapshot mutable inputs so a caller cannot mutate already-authorized memory
-        # after the write boundary has accepted it.
         self._records.append(
             MemoryRecord(
                 auth,
                 key.strip(),
-                deepcopy(value),
+                _snapshot_json(value),
                 {"source": source.strip(), "kind": kind.strip()},
             )
         )
@@ -68,8 +83,8 @@ class EpochBoundMemoryStore:
             MemoryRecord(
                 record.authority,
                 record.key,
-                deepcopy(record.value),
-                deepcopy(dict(record.provenance)),
+                _snapshot_json(record.value),
+                dict(record.provenance),
             )
             for record in self._records
             if auth.permits(record.authority)
@@ -78,7 +93,7 @@ class EpochBoundMemoryStore:
     def build_context(self, current: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
         """Context assembly uses the same authority gate and returns detached values."""
         return tuple(
-            {"key": record.key, "value": deepcopy(record.value), "provenance": deepcopy(dict(record.provenance))}
+            {"key": record.key, "value": _snapshot_json(record.value), "provenance": dict(record.provenance)}
             for record in self.read_project(current)
         )
 
