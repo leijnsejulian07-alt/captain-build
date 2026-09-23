@@ -13,6 +13,12 @@ def base(**updates):
     return value
 
 
+def rejected(value, exc=(TypeError, ValueError)):
+    try: evaluate(value)
+    except exc: return
+    raise AssertionError("malformed connector state accepted")
+
+
 def run():
     assert evaluate(base())["ready"] is True
     assert evaluate(base())["blockers"] == ()
@@ -41,28 +47,30 @@ def run():
     out = evaluate(base(permissions=["write", "read", "read", "", None]))
     assert out["permissions"] == ("read", "write")
 
-    # Trust-boundary containers must be inert built-ins. Subclasses can override
-    # get()/iteration and execute plugin-controlled code during Settings evaluation.
     touched = []
     class EvilDict(dict):
-        def get(self, *args, **kwargs):
-            touched.append("dict-get"); raise AssertionError("hostile dict hook executed")
+        def get(self, *args, **kwargs): touched.append("dict-get"); raise AssertionError("hostile dict hook executed")
     class EvilList(list):
-        def __iter__(self):
-            touched.append("list-iter"); raise AssertionError("hostile list hook executed")
-    for hostile in (EvilDict(base()),):
-        try: evaluate(hostile)
-        except TypeError: pass
-        else: raise AssertionError("hostile connector container accepted")
-    x = base(permissions=EvilList(["repo:read"]))
-    try: evaluate(x)
-    except TypeError: pass
-    else: raise AssertionError("hostile permissions container accepted")
-    x = base(health=EvilDict(base()["health"]))
-    try: evaluate(x)
-    except TypeError: pass
-    else: raise AssertionError("hostile health container accepted")
+        def __iter__(self): touched.append("list-iter"); raise AssertionError("hostile list hook executed")
+    class EvilStr(str):
+        def __eq__(self, other): touched.append("str-eq"); raise AssertionError("hostile string hook executed")
+        def __hash__(self): touched.append("str-hash"); raise AssertionError("hostile string hook executed")
+    rejected(EvilDict(base()))
+    rejected(base(permissions=EvilList(["repo:read"])))
+    rejected(base(health=EvilDict(base()["health"])))
+    rejected(base(connector_id=EvilStr("github")))
+    x = base(); x["health"] = dict(x["health"], status=EvilStr("healthy")); rejected(x)
+    x = base(); x["health"] = dict(x["health"], auth_status=EvilStr("valid")); rejected(x)
+    x = base(); x["health"] = dict(x["health"], provider_version_status=EvilStr("current")); rejected(x)
     assert touched == []
+
+    # Bound provider-controlled scalar/cardinality inputs to avoid Settings DoS.
+    rejected(base(connector_id="x" * 257))
+    rejected(base(permissions=["p"] * 129))
+    rejected(base(permissions=["x" * 257]))
+    for field in ("status", "auth_status", "provider_version_status"):
+        x = base(); x["health"] = dict(x["health"], **{field: "x" * 257}); rejected(x)
+    assert evaluate(base())["ready"] is True
     print("CAPTAIN_CONNECTOR_READINESS_PASS")
 
 
