@@ -6,6 +6,7 @@ native or OSS memory providers must preserve.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -37,20 +38,47 @@ class EpochBoundMemoryStore:
             raise MemoryAuthorityError("memory key required")
         if not isinstance(provenance, Mapping):
             raise MemoryAuthorityError("provenance mapping required")
-        self._records.append(MemoryRecord(auth, key.strip(), value, dict(provenance)))
+        required = {"source", "kind"}
+        if set(provenance) != required:
+            raise MemoryAuthorityError("provenance fields must be exactly source + kind")
+        source = provenance["source"]
+        kind = provenance["kind"]
+        if not isinstance(source, str) or not source.strip():
+            raise MemoryAuthorityError("provenance source required")
+        if not isinstance(kind, str) or not kind.strip():
+            raise MemoryAuthorityError("provenance kind required")
+        # Snapshot mutable inputs so a caller cannot mutate already-authorized memory
+        # after the write boundary has accepted it.
+        self._records.append(
+            MemoryRecord(
+                auth,
+                key.strip(),
+                deepcopy(value),
+                {"source": source.strip(), "kind": kind.strip()},
+            )
+        )
 
     def read_project(self, current: Mapping[str, Any]) -> tuple[MemoryRecord, ...]:
-        """Return only records with exact current authority; malformed current state fails closed."""
+        """Return detached records with exact current authority; malformed state fails closed."""
         try:
             auth = MemoryAuthority.parse(current)
         except (MemoryAuthorityError, TypeError):
             return ()
-        return tuple(record for record in self._records if auth.permits(record.authority))
+        return tuple(
+            MemoryRecord(
+                record.authority,
+                record.key,
+                deepcopy(record.value),
+                deepcopy(dict(record.provenance)),
+            )
+            for record in self._records
+            if auth.permits(record.authority)
+        )
 
     def build_context(self, current: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
-        """Context assembly uses the same authority gate as direct memory reads."""
+        """Context assembly uses the same authority gate and returns detached values."""
         return tuple(
-            {"key": record.key, "value": record.value, "provenance": dict(record.provenance)}
+            {"key": record.key, "value": deepcopy(record.value), "provenance": deepcopy(dict(record.provenance))}
             for record in self.read_project(current)
         )
 
