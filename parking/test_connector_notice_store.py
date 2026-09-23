@@ -71,6 +71,24 @@ def test_reconcile_rejects_blank_or_excessive_codes_atomically():
     assert store.visible("a", 2)[0]["code"] == "auth_expired"
 
 
+def test_live_store_global_capacity_is_bounded_and_atomic():
+    store = ConnectorNoticeStore()
+    for i in range(MAX_PERSISTED_NOTICES):
+        store.reconcile(f"scope-{i}", "github", ("auth_expired",), now=1)
+    assert len(store.snapshot()["notices"]) == MAX_PERSISTED_NOTICES
+    try:
+        store.reconcile("overflow", "github", ("auth_expired",), now=2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("live connector notice capacity was not enforced")
+    assert store.visible("overflow", 2) == ()
+    assert len(store.snapshot()["notices"]) == MAX_PERSISTED_NOTICES
+    store.reconcile("scope-0", "github", (), now=3)
+    store.reconcile("replacement", "github", ("auth_expired",), now=4)
+    assert store.visible("replacement", 4)[0]["code"] == "auth_expired"
+
+
 def test_snapshot_roundtrip_preserves_scoped_snooze_without_secrets():
     source = ConnectorNoticeStore(reminder_seconds=100)
     source.reconcile("project-a", "github", ("auth_expired",), now=10)
