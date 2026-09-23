@@ -2,6 +2,7 @@
 from memory_authority import MemoryAuthorityError
 from memory_store_epoch_adapter import (
     EpochBoundMemoryStore, MAX_JSON_NODES, MAX_KEY_CHARS, MAX_PROVENANCE_CHARS,
+    MAX_RECORDS_PER_AUTHORITY,
 )
 
 H1 = "1" * 64
@@ -43,6 +44,12 @@ def run():
     context = store.build_context(BASE); context[0]["value"]["tags"].append("context-mutation")
     assert store.build_context(BASE)[0]["value"]["tags"] == ["safe"]
 
+    # Same authority + key is a replacement, not context inflation.
+    store.write_project(BASE, key="decision", value={"choice": "updated"},
+                        provenance={"source": "captain", "kind": "derived"})
+    assert len(store.read_project(BASE)) == 1
+    assert store.read_project(BASE)[0].value == {"choice": "updated"}
+
     for field, value in (("state_epoch", 5), ("chat_id", "chat-b"),
                          ("project_id", "project-b"), ("repo_scope_hash", H2)):
         assert store.read_project(changed(field, value)) == (), field
@@ -72,8 +79,27 @@ def run():
     for _ in range(34): too_deep = [too_deep]
     must_reject(store, too_deep)
     must_reject(store, [0] * (MAX_JSON_NODES + 1))
-    assert len(tuple(store.all_records_for_test_only())) == 1
-    print("PASS: project memory authority, payload and metadata boundaries fail closed")
+
+    # Fill an isolated authority to its exact budget. It must neither evict nor
+    # borrow capacity from BASE; an existing key remains replaceable when full.
+    full_auth = changed("project_id", "project-full")
+    for i in range(MAX_RECORDS_PER_AUTHORITY):
+        store.write_project(full_auth, key=f"k{i}", value=i,
+                            provenance={"source": "captain", "kind": "derived"})
+    assert len(store.read_project(full_auth)) == MAX_RECORDS_PER_AUTHORITY
+    try:
+        store.write_project(full_auth, key="overflow", value=1,
+                            provenance={"source": "captain", "kind": "derived"})
+    except MemoryAuthorityError:
+        pass
+    else:
+        raise AssertionError("full authority accepted a new memory key")
+    store.write_project(full_auth, key="k0", value="replacement",
+                        provenance={"source": "captain", "kind": "derived"})
+    assert len(store.read_project(full_auth)) == MAX_RECORDS_PER_AUTHORITY
+    assert store.read_project(full_auth)[0].value == "replacement"
+    assert len(store.read_project(BASE)) == 1
+    print("PASS: project memory authority, payload, metadata and cardinality boundaries fail closed")
 
 
 if __name__ == "__main__": run()
