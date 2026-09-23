@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import math
 
 DEFAULT_REMINDER_SECONDS = 24 * 60 * 60
+MAX_ACTIVE_CODES_PER_CONNECTOR = 64
 
 
 @dataclass(frozen=True)
@@ -51,8 +52,10 @@ class ConnectorNoticeStore:
         connector_id = self._label(connector_id, "connector_id")
         if type(active_codes) is not tuple or any(type(code) is not str for code in active_codes):
             raise TypeError("active_codes must be a tuple of plain strings")
+        if len(active_codes) > MAX_ACTIVE_CODES_PER_CONNECTOR:
+            raise ValueError("too many active connector notice codes")
         now = self._time(now)
-        normalized = tuple(dict.fromkeys(code.strip() for code in active_codes if code.strip()))
+        normalized = tuple(dict.fromkeys(self._label(code, "code") for code in active_codes))
         desired = {self._key(scope_id, connector_id, code) for code in normalized}
         for key in tuple(self._items):
             if key.scope_id == scope_id and key.connector_id == connector_id and key not in desired:
