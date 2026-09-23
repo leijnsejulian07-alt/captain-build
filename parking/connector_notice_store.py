@@ -54,11 +54,17 @@ class ConnectorNoticeStore:
         now = self._time(now)
         normalized = tuple(dict.fromkeys(self._label(code, "code") for code in active_codes))
         desired = {self._key(scope_id, connector_id, code) for code in normalized}
-        for key in tuple(self._items):
-            if key.scope_id == scope_id and key.connector_id == connector_id and key not in desired:
-                del self._items[key]
+
+        # Build a candidate first so capacity failures cannot partially clear or add notices.
+        candidate = {
+            key: state for key, state in self._items.items()
+            if not (key.scope_id == scope_id and key.connector_id == connector_id)
+        }
         for key in desired:
-            self._items.setdefault(key, {"first_seen": now, "snoozed_until": None})
+            candidate[key] = self._items.get(key, {"first_seen": now, "snoozed_until": None})
+        if len(candidate) > MAX_PERSISTED_NOTICES:
+            raise ValueError("connector notice store capacity exceeded")
+        self._items = candidate
 
     def dismiss_temporarily(self, scope_id, connector_id, code, now):
         key = self._key(scope_id, connector_id, code)
@@ -82,6 +88,8 @@ class ConnectorNoticeStore:
 
     def snapshot(self):
         """Return a secret-free plain-data snapshot suitable for local persistence."""
+        if len(self._items) > MAX_PERSISTED_NOTICES:
+            raise ValueError("connector notice store capacity exceeded")
         rows = []
         for key, state in sorted(self._items.items(), key=lambda item: (item[0].scope_id, item[0].connector_id, item[0].code)):
             rows.append({"scope_id": key.scope_id, "connector_id": key.connector_id, "code": key.code,
