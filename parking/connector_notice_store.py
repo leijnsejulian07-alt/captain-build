@@ -6,6 +6,7 @@ reminder interval or on a later launch. Resolution removes them automatically.
 """
 
 from dataclasses import dataclass
+import math
 
 DEFAULT_REMINDER_SECONDS = 24 * 60 * 60
 
@@ -31,12 +32,17 @@ class ConnectorNoticeStore:
                 raise ValueError(f"{name} must be a non-empty bounded string")
         return NoticeKey(scope_id.strip(), connector_id.strip(), code.strip())
 
+    @staticmethod
+    def _time(now):
+        if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
+            raise ValueError("now must be a finite non-negative number")
+        return now
+
     def reconcile(self, scope_id, connector_id, active_codes, now):
         """Replace active codes for one scoped connector; resolved notices disappear."""
         if type(active_codes) is not tuple or any(type(code) is not str for code in active_codes):
             raise TypeError("active_codes must be a tuple of plain strings")
-        if type(now) not in (int, float) or now < 0:
-            raise ValueError("now must be a non-negative number")
+        now = self._time(now)
         normalized = tuple(dict.fromkeys(code.strip() for code in active_codes if code.strip()))
         desired = {self._key(scope_id, connector_id, code) for code in normalized}
         for key in tuple(self._items):
@@ -49,8 +55,7 @@ class ConnectorNoticeStore:
         key = self._key(scope_id, connector_id, code)
         if key not in self._items:
             return False
-        if type(now) not in (int, float) or now < 0:
-            raise ValueError("now must be a non-negative number")
+        now = self._time(now)
         self._items[key]["snoozed_until"] = now + self._reminder_seconds
         return True
 
@@ -62,8 +67,7 @@ class ConnectorNoticeStore:
         """
         if type(scope_id) is not str or not scope_id.strip():
             raise ValueError("scope_id required")
-        if type(now) not in (int, float) or now < 0:
-            raise ValueError("now must be a non-negative number")
+        now = self._time(now)
         out = []
         for key, state in self._items.items():
             if key.scope_id != scope_id.strip():
