@@ -7,9 +7,14 @@ native or OSS memory providers must preserve.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Iterable, Mapping
 
 from memory_authority import MemoryAuthority, MemoryAuthorityError
+
+MAX_JSON_DEPTH = 32
+MAX_JSON_NODES = 10_000
+MAX_STRING_CHARS = 1_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,20 +25,41 @@ class MemoryRecord:
     provenance: Mapping[str, Any]
 
 
-def _snapshot_json(value: Any, *, depth: int = 0) -> Any:
-    """Copy only inert JSON-shaped values; never invoke caller-defined copy hooks."""
-    if depth > 32:
+def _snapshot_json(value: Any, *, depth: int = 0, budget: list[int] | None = None) -> Any:
+    """Copy bounded inert JSON data without invoking caller-defined hooks.
+
+    The shared node budget prevents a shallow but extremely wide plugin/builder
+    payload from consuming unbounded CPU/RAM at Captain's memory boundary.
+    """
+    if budget is None:
+        budget = [MAX_JSON_NODES]
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise MemoryAuthorityError("memory value exceeds node budget")
+    if depth > MAX_JSON_DEPTH:
         raise MemoryAuthorityError("memory value nesting too deep")
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise MemoryAuthorityError("memory numbers must be finite JSON numbers")
+        return value
+    if isinstance(value, str):
+        if len(value) > MAX_STRING_CHARS:
+            raise MemoryAuthorityError("memory string too large")
         return value
     if isinstance(value, list):
-        return [_snapshot_json(item, depth=depth + 1) for item in value]
+        return [_snapshot_json(item, depth=depth + 1, budget=budget) for item in value]
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for key, item in value.items():
             if not isinstance(key, str):
                 raise MemoryAuthorityError("memory object keys must be strings")
-            out[key] = _snapshot_json(item, depth=depth + 1)
+            if len(key) > MAX_STRING_CHARS:
+                raise MemoryAuthorityError("memory object key too large")
+            out[key] = _snapshot_json(item, depth=depth + 1, budget=budget)
         return out
     raise MemoryAuthorityError("memory value must be inert JSON-shaped data")
 
