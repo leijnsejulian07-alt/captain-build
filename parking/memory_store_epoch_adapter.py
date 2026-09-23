@@ -55,7 +55,7 @@ def _snapshot_json(value: Any, *, depth: int = 0, budget: list[int] | None = Non
         for key, item in value.items():
             if not isinstance(key, str):
                 raise MemoryAuthorityError("memory object keys must be strings")
-            if len(key) > MAX_STRING_CHARS:
+            if len(key) > MAX_KEY_CHARS:
                 raise MemoryAuthorityError("memory object key too large")
             out[key] = _snapshot_json(item, depth=depth + 1, budget=budget)
         return out
