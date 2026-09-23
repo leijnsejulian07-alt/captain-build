@@ -37,35 +37,36 @@ def _snapshot_json(value: Any, *, depth: int = 0, budget: list[int] | None = Non
         raise MemoryAuthorityError("memory value exceeds node budget")
     if depth > MAX_JSON_DEPTH:
         raise MemoryAuthorityError("memory value nesting too deep")
-    if value is None or isinstance(value, bool):
+    value_type = type(value)
+    if value is None or value_type is bool:
         return value
-    if isinstance(value, int):
+    if value_type is int:
         return value
-    if isinstance(value, float):
+    if value_type is float:
         if not math.isfinite(value):
             raise MemoryAuthorityError("memory numbers must be finite JSON numbers")
         return value
-    if isinstance(value, str):
+    if value_type is str:
         if len(value) > MAX_STRING_CHARS:
             raise MemoryAuthorityError("memory string too large")
         return value
-    if isinstance(value, list):
+    if value_type is list:
         return [_snapshot_json(item, depth=depth + 1, budget=budget) for item in value]
-    if isinstance(value, dict):
+    if value_type is dict:
         out: dict[str, Any] = {}
         for key, item in value.items():
-            if not isinstance(key, str):
-                raise MemoryAuthorityError("memory object keys must be strings")
+            if type(key) is not str:
+                raise MemoryAuthorityError("memory object keys must be plain strings")
             if len(key) > MAX_KEY_CHARS:
                 raise MemoryAuthorityError("memory object key too large")
             out[key] = _snapshot_json(item, depth=depth + 1, budget=budget)
         return out
-    raise MemoryAuthorityError("memory value must be inert JSON-shaped data")
+    raise MemoryAuthorityError("memory value must be inert plain JSON-shaped data")
 
 
 def _bounded_label(value: Any, *, field: str, limit: int) -> str:
-    if not isinstance(value, str):
-        raise MemoryAuthorityError(f"{field} must be a string")
+    if type(value) is not str:
+        raise MemoryAuthorityError(f"{field} must be a plain string")
     normalized = value.strip()
     if not normalized:
         raise MemoryAuthorityError(f"{field} required")
@@ -82,8 +83,10 @@ class EpochBoundMemoryStore:
                       provenance: Mapping[str, Any]) -> None:
         auth = MemoryAuthority.parse(authority)
         clean_key = _bounded_label(key, field="memory key", limit=MAX_KEY_CHARS)
-        if not isinstance(provenance, Mapping):
-            raise MemoryAuthorityError("provenance mapping required")
+        # Exact built-in dict only: Mapping/dict subclasses may execute caller code
+        # through iteration, item access, or other overridden methods.
+        if type(provenance) is not dict:
+            raise MemoryAuthorityError("provenance must be a plain dict")
         required = {"source", "kind"}
         if set(provenance) != required:
             raise MemoryAuthorityError("provenance fields must be exactly source + kind")
@@ -94,8 +97,6 @@ class EpochBoundMemoryStore:
         incoming = MemoryRecord(auth, clean_key, _snapshot_json(value),
                                 {"source": source, "kind": kind})
 
-        # Cardinality is authority-local. Rewriting a key is a deterministic
-        # replacement, not context inflation; unrelated authorities are untouched.
         matching = [i for i, record in enumerate(self._records)
                     if auth.permits(record.authority)]
         for index in matching:
