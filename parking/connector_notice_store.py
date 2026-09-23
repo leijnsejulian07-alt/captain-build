@@ -26,11 +26,18 @@ class ConnectorNoticeStore:
         self._items = {}
 
     @staticmethod
-    def _key(scope_id, connector_id, code):
-        for value, name in ((scope_id, "scope_id"), (connector_id, "connector_id"), (code, "code")):
-            if type(value) is not str or not value.strip() or len(value) > 512:
-                raise ValueError(f"{name} must be a non-empty bounded string")
-        return NoticeKey(scope_id.strip(), connector_id.strip(), code.strip())
+    def _label(value, name):
+        if type(value) is not str or not value.strip() or len(value) > 512:
+            raise ValueError(f"{name} must be a non-empty bounded string")
+        return value.strip()
+
+    @classmethod
+    def _key(cls, scope_id, connector_id, code):
+        return NoticeKey(
+            cls._label(scope_id, "scope_id"),
+            cls._label(connector_id, "connector_id"),
+            cls._label(code, "code"),
+        )
 
     @staticmethod
     def _time(now):
@@ -40,13 +47,15 @@ class ConnectorNoticeStore:
 
     def reconcile(self, scope_id, connector_id, active_codes, now):
         """Replace active codes for one scoped connector; resolved notices disappear."""
+        scope_id = self._label(scope_id, "scope_id")
+        connector_id = self._label(connector_id, "connector_id")
         if type(active_codes) is not tuple or any(type(code) is not str for code in active_codes):
             raise TypeError("active_codes must be a tuple of plain strings")
         now = self._time(now)
         normalized = tuple(dict.fromkeys(code.strip() for code in active_codes if code.strip()))
         desired = {self._key(scope_id, connector_id, code) for code in normalized}
         for key in tuple(self._items):
-            if key.scope_id == scope_id.strip() and key.connector_id == connector_id.strip() and key not in desired:
+            if key.scope_id == scope_id and key.connector_id == connector_id and key not in desired:
                 del self._items[key]
         for key in desired:
             self._items.setdefault(key, {"first_seen": now, "snoozed_until": None})
@@ -65,12 +74,11 @@ class ConnectorNoticeStore:
         A later launch re-surfaces unresolved notices even if their timer has not yet
         elapsed; this intentionally matches Captain's persistent remediation UX.
         """
-        if type(scope_id) is not str or not scope_id.strip():
-            raise ValueError("scope_id required")
+        scope_id = self._label(scope_id, "scope_id")
         now = self._time(now)
         out = []
         for key, state in self._items.items():
-            if key.scope_id != scope_id.strip():
+            if key.scope_id != scope_id:
                 continue
             until = state["snoozed_until"]
             if launch or until is None or now >= until:
