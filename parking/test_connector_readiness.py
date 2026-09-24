@@ -22,6 +22,11 @@ def rejected(value, exc=(TypeError, ValueError)):
 def run():
     assert evaluate(base())["ready"] is True
     assert evaluate(base())["blockers"] == ()
+    assert evaluate(base())["health"]["checked_at"] is None
+    stamped = base(); stamped["health"] = dict(stamped["health"], checked_at="2026-09-24T13:30:00Z")
+    assert evaluate(stamped)["health"]["checked_at"] == "2026-09-24T13:30:00Z"
+    hostile_stamp = base(); hostile_stamp["health"] = dict(hostile_stamp["health"], checked_at={"token": "secret"})
+    assert evaluate(hostile_stamp)["health"]["checked_at"] is None
     assert evaluate(base(connected=False, ready=True))["ready"] is False
     assert "not_connected" in evaluate(base(connected=False, ready=True))["blockers"]
     assert evaluate(base(enabled=False, ready=True))["ready"] is False
@@ -45,7 +50,7 @@ def run():
     # Unknown provider strings fail closed and are never reflected into UI state.
     x = base(); x["health"] = {"status": "broken: token=super-secret", "auth_status": "expired: sk-secret", "provider_version_status": "unknown: C:\\Users\\Julian"}
     out = evaluate(x); assert out["blockers"] == ("auth_unhealthy", "health_unhealthy", "provider_compatibility_unverified")
-    assert out["health"] == {"status": "unknown", "auth_status": "unknown", "provider_version_status": "unknown"}
+    assert out["health"] == {"status": "unknown", "checked_at": None, "auth_status": "unknown", "provider_version_status": "unknown"}
     assert "secret" not in repr(out).lower() and "julian" not in repr(out).lower()
     out = evaluate(base(permissions=["write", "read", "read", "", None]))
     assert out["permissions"] == ("read", "write")
