@@ -8,7 +8,9 @@ from __future__ import annotations
 from typing import Any
 
 from memory_authority import MemoryAuthorityError
-from memory_store_epoch_adapter import EpochBoundMemoryStore, MAX_RECORDS_PER_AUTHORITY
+from memory_store_epoch_adapter import (
+    EpochBoundMemoryStore, MAX_RECORDS_PER_AUTHORITY, _snapshot_json,
+)
 
 SNAPSHOT_VERSION = 1
 MAX_AUTHORITIES_PER_SNAPSHOT = 256
@@ -28,7 +30,8 @@ def snapshot(store: EpochBoundMemoryStore) -> dict[str, Any]:
                        "project_id": r.authority.project_id,
                        "repo_scope_hash": r.authority.repo_scope_hash,
                        "state_epoch": r.authority.state_epoch},
-         "key": r.key, "value": r.value, "provenance": dict(r.provenance)}
+         "key": r.key, "value": _snapshot_json(r.value),
+         "provenance": dict(r.provenance)}
         for r in records
     ]}
 
