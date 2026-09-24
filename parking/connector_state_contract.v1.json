@@ -38,7 +38,7 @@
     {"if":{"properties":{"installed":{"const":false}}},"then":{"properties":{"connected":{"const":false},"enabled":{"const":false},"ready":{"const":false}}}},
     {"if":{"properties":{"connected":{"const":false}}},"then":{"properties":{"ready":{"const":false}}}},
     {"if":{"properties":{"enabled":{"const":false}}},"then":{"properties":{"ready":{"const":false}}}},
-    {"if":{"properties":{"ready":{"const":true}}},"then":{"properties":{"installed":{"const":true},"connected":{"const":true},"enabled":{"const":true},"health":{"properties":{"status":{"const":"healthy"},"auth_status":{"enum":["not_required","valid"]},"provider_version_status":{"enum":["unknown","current"]}}}}}},
+    {"if":{"properties":{"ready":{"const":true}}},"then":{"properties":{"installed":{"const":true},"connected":{"const":true},"enabled":{"const":true},"health":{"properties":{"status":{"const":"healthy"},"auth_status":{"enum":["not_required","valid"]},"provider_version_status":{"const":"current"}}}}}},
     {"if":{"properties":{"auth_method":{"enum":["oauth","api_key","id_based","local_session"]}}},"then":{"properties":{"connected":{"type":"boolean"}}}}
   ]
 }
