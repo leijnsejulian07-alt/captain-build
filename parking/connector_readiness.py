@@ -3,27 +3,43 @@
 Providers report normalized capability/auth health; Captain derives UI state and
 never performs authentication, network calls, or paid API usage here.
 """
+import re
+
 AUTH_METHODS = {"none", "oauth", "api_key", "id_based", "local_session"}
+HEALTH_STATUSES = {"unknown", "healthy", "degraded", "blocked"}
+AUTH_STATUSES = {"not_required", "unknown", "valid", "expired", "invalid", "reauth_required"}
+VERSION_STATUSES = {"unknown", "current", "deprecated", "migration_required"}
 GOOD_AUTH = {"not_required", "valid"}
 GOOD_VERSION = {"current"}
 MAX_LABEL = 256
+MAX_CONNECTOR_ID = 128
+MAX_PERMISSION_LABEL = 128
 MAX_PERMISSIONS = 128
+CONNECTOR_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
-def _label(value, field, *, allow_empty=False):
+def _label(value, field, *, allow_empty=False, max_length=MAX_LABEL):
     """Validate an inert, bounded provider-controlled label."""
     if type(value) is not str:
         raise TypeError(f"{field} must be a plain string")
-    if (not allow_empty and not value) or len(value) > MAX_LABEL:
+    if (not allow_empty and not value) or len(value) > max_length:
         raise ValueError(f"{field} invalid")
     return value
+
+
+def _enum(value, field, allowed):
+    """Normalize provider-controlled enum values without reflecting diagnostics."""
+    value = _label(value, field)
+    return value if value in allowed else "unknown"
 
 
 def evaluate(connector):
     """Return normalized Installed/Connected/Enabled/Ready state, fail closed."""
     if type(connector) is not dict:
         raise TypeError("connector must be a plain dict")
-    connector_id = _label(connector.get("connector_id"), "connector_id")
+    connector_id = _label(connector.get("connector_id"), "connector_id", max_length=MAX_CONNECTOR_ID)
+    if CONNECTOR_ID_RE.fullmatch(connector_id) is None:
+        raise ValueError("connector_id invalid")
     installed = connector.get("installed") is True
     connected = installed and connector.get("connected") is True
     enabled = connected and connector.get("enabled") is True
@@ -40,7 +56,7 @@ def evaluate(connector):
     for permission in raw_permissions:
         if type(permission) is not str:
             continue
-        if len(permission) > MAX_LABEL:
+        if len(permission) > MAX_PERMISSION_LABEL:
             raise ValueError("permission too long")
         if permission.strip():
             permissions.append(permission)
@@ -49,9 +65,9 @@ def evaluate(connector):
     health = connector.get("health")
     if type(health) is not dict:
         raise TypeError("health must be a plain dict")
-    health_status = _label(health.get("status", "unknown"), "health.status")
-    auth_status = _label(health.get("auth_status", "unknown"), "health.auth_status")
-    version_status = _label(health.get("provider_version_status", "unknown"), "health.provider_version_status")
+    health_status = _enum(health.get("status", "unknown"), "health.status", HEALTH_STATUSES)
+    auth_status = _enum(health.get("auth_status", "unknown"), "health.auth_status", AUTH_STATUSES)
+    version_status = _enum(health.get("provider_version_status", "unknown"), "health.provider_version_status", VERSION_STATUSES)
     auth_ok = auth_method_known and auth_status in GOOD_AUTH
     if auth_method != "none" and auth_status == "not_required": auth_ok = False
     if auth_method == "none" and auth_status != "not_required": auth_ok = False
