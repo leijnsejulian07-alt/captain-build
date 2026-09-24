@@ -93,10 +93,11 @@ class EpochBoundMemoryStore:
 
     def write_project(self, authority: Mapping[str, Any], *, key: str, value: Any,
                       provenance: Mapping[str, Any]) -> None:
+        # Validate and detach the entire candidate before inspecting or mutating
+        # existing state. A rejected write therefore cannot partially replace,
+        # append, evict, or otherwise perturb previously trusted memory.
         auth = MemoryAuthority.parse(authority)
         clean_key = _bounded_label(key, field="memory key", limit=MAX_KEY_CHARS)
-        # Exact built-in dict only: Mapping/dict subclasses may execute caller code
-        # through iteration, item access, or other overridden methods.
         if type(provenance) is not dict:
             raise MemoryAuthorityError("provenance must be a plain dict")
         required = {"source", "kind"}
@@ -106,7 +107,8 @@ class EpochBoundMemoryStore:
                                 limit=MAX_PROVENANCE_CHARS)
         kind = _bounded_label(provenance["kind"], field="provenance kind",
                               limit=MAX_PROVENANCE_CHARS)
-        incoming = MemoryRecord(auth, clean_key, _snapshot_json(value),
+        clean_value = _snapshot_json(value)
+        incoming = MemoryRecord(auth, clean_key, clean_value,
                                 {"source": source, "kind": kind})
 
         matching = [i for i, record in enumerate(self._records)
