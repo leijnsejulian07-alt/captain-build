@@ -121,6 +121,26 @@ class EpochBoundMemoryStore:
             raise MemoryAuthorityError("project memory authority exceeds record budget")
         self._records.append(incoming)
 
+    def advance_project_epoch(self, previous: Mapping[str, Any],
+                              current: Mapping[str, Any]) -> int:
+        """Retire only the exact previous epoch after a validated Project State advance.
+
+        This is deliberately destructive only after both authorities parse and prove
+        identical chat/project/repo scope plus a strictly increasing epoch. It lets
+        Captain's Project State lifecycle remove stale persisted memory instead of
+        merely making it unreadable. It never migrates old memory into the new epoch.
+        """
+        old = MemoryAuthority.parse(previous)
+        new = MemoryAuthority.parse(current)
+        same_scope = (old.chat_id == new.chat_id and old.project_id == new.project_id
+                      and old.repo_scope_hash == new.repo_scope_hash)
+        if not same_scope or new.state_epoch <= old.state_epoch:
+            raise MemoryAuthorityError("project memory epoch transition invalid")
+        kept = [record for record in self._records if not old.permits(record.authority)]
+        removed = len(self._records) - len(kept)
+        self._records = kept
+        return removed
+
     def read_project(self, current: Mapping[str, Any]) -> tuple[MemoryRecord, ...]:
         """Return detached records with exact current authority; malformed state fails closed."""
         try:
