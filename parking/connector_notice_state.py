@@ -11,6 +11,8 @@ from typing import Any
 
 MAX_SNOOZE_SECONDS = 24 * 60 * 60
 MAX_CONNECTOR_ID_CHARS = 128
+MAX_NOTICES = 256
+_NOTICE_KEYS = frozenset({"connector_id", "events", "settings_deep_link", "dismissed_until", "dismissed_launch"})
 
 
 @dataclass(frozen=True)
@@ -47,9 +49,46 @@ def _validated_health(result: Any) -> tuple[str, tuple[str, ...], bool, str]:
     return cid, events, important, link
 
 
+def _validated_snapshot_row(row: Any) -> Notice:
+    if type(row) is not dict or frozenset(row.keys()) != _NOTICE_KEYS:
+        raise ValueError("invalid notice snapshot row")
+    cid = row["connector_id"]
+    events = row["events"]
+    link = row["settings_deep_link"]
+    if type(cid) is not str or not cid or len(cid) > MAX_CONNECTOR_ID_CHARS:
+        raise ValueError("invalid connector_id")
+    if type(events) is not tuple or not events or any(type(x) is not str for x in events):
+        raise ValueError("invalid notice events")
+    if type(link) is not str or link != f"settings://connectors/{cid}":
+        raise ValueError("invalid settings deep link")
+    until = row["dismissed_until"]
+    launch = row["dismissed_launch"]
+    if (until is None) != (launch is None):
+        raise ValueError("partial dismissal state")
+    if until is not None:
+        until = _plain_int(until, "dismissed_until")
+        launch = _plain_int(launch, "dismissed_launch")
+    return Notice(cid, events, link, until, launch)
+
+
 class NoticeStore:
     def __init__(self) -> None:
         self._notices: dict[str, Notice] = {}
+
+    @classmethod
+    def from_snapshot(cls, snapshot: Any) -> "NoticeStore":
+        """Atomically restore detached persisted state; malformed data fails closed."""
+        if type(snapshot) is not tuple or len(snapshot) > MAX_NOTICES:
+            raise ValueError("invalid notice snapshot")
+        restored: dict[str, Notice] = {}
+        for row in snapshot:
+            notice = _validated_snapshot_row(row)
+            if notice.connector_id in restored:
+                raise ValueError("duplicate connector notice")
+            restored[notice.connector_id] = notice
+        store = cls()
+        store._notices = restored
+        return store
 
     def reconcile(self, health_result: Any) -> None:
         """Atomically create/update/clear a notice from normalized health output."""
@@ -58,7 +97,6 @@ class NoticeStore:
             self._notices.pop(cid, None)
             return
         old = self._notices.get(cid)
-        # A materially changed problem becomes visible immediately.
         keep_snooze = old is not None and old.events == events
         self._notices[cid] = Notice(
             cid, events, link,
@@ -88,7 +126,6 @@ class NoticeStore:
         launch_i = _plain_int(launch_id, "launch_id")
         out = []
         for notice in self._notices.values():
-            # Reappear on a later app launch even when the wall-clock snooze remains.
             if (notice.dismissed_until is not None and now_i < notice.dismissed_until
                     and notice.dismissed_launch == launch_i):
                 continue
