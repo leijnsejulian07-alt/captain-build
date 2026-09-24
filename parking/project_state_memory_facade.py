@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from memory_authority import MemoryAuthority, MemoryAuthorityError
+from memory_persistence import restore, snapshot
 from memory_store_epoch_adapter import EpochBoundMemoryStore, MemoryRecord
 
 
@@ -19,6 +20,11 @@ class ProjectStateMemoryFacade:
         if store is not None and type(store) is not EpochBoundMemoryStore:
             raise MemoryAuthorityError("memory store must be the native epoch-bound store")
         self.__store = store if store is not None else EpochBoundMemoryStore()
+
+    @classmethod
+    def from_persisted_snapshot(cls, data: Any) -> "ProjectStateMemoryFacade":
+        """Restore only through the versioned, fully validated persistence boundary."""
+        return cls(restore(data))
 
     @staticmethod
     def _canonical(current: Mapping[str, Any]) -> dict[str, Any]:
@@ -56,6 +62,6 @@ class ProjectStateMemoryFacade:
         new = self._canonical(current)
         return self.__store.advance_project_epoch(old, new)
 
-    def snapshot_store_for_persistence(self) -> EpochBoundMemoryStore:
-        """Trusted Captain persistence hook; do not expose this object to plugins/builders."""
-        return self.__store
+    def snapshot_for_persistence(self) -> dict[str, Any]:
+        """Return detached inert data; never expose the mutable authority store itself."""
+        return snapshot(self.__store)
