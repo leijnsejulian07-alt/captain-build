@@ -12,6 +12,8 @@ from typing import Any
 MAX_SNOOZE_SECONDS = 24 * 60 * 60
 MAX_CONNECTOR_ID_CHARS = 128
 MAX_NOTICES = 256
+MAX_EVENTS_PER_NOTICE = 16
+MAX_EVENT_CHARS = 96
 _NOTICE_KEYS = frozenset({"connector_id", "events", "settings_deep_link", "dismissed_until", "dismissed_launch"})
 
 
@@ -30,6 +32,18 @@ def _plain_int(value: Any, name: str) -> int:
     return value
 
 
+def _validated_events(events: Any, *, allow_empty: bool) -> tuple[str, ...]:
+    if type(events) is not tuple:
+        raise ValueError("events must be a tuple of plain strings")
+    if (not allow_empty and not events) or len(events) > MAX_EVENTS_PER_NOTICE:
+        raise ValueError("invalid notice event count")
+    if any(type(x) is not str or not x or len(x) > MAX_EVENT_CHARS for x in events):
+        raise ValueError("invalid notice event")
+    if len(set(events)) != len(events):
+        raise ValueError("duplicate notice event")
+    return events
+
+
 def _validated_health(result: Any) -> tuple[str, tuple[str, ...], bool, str]:
     if type(result) is not dict:
         raise TypeError("health result must be a plain dict")
@@ -39,8 +53,7 @@ def _validated_health(result: Any) -> tuple[str, tuple[str, ...], bool, str]:
     link = result.get("settings_deep_link")
     if type(cid) is not str or not cid or len(cid) > MAX_CONNECTOR_ID_CHARS:
         raise ValueError("invalid connector_id")
-    if type(events) is not tuple or any(type(x) is not str for x in events):
-        raise ValueError("events must be a tuple of plain strings")
+    events = _validated_events(events, allow_empty=True)
     if type(important) is not bool:
         raise ValueError("important must be a plain bool")
     expected = f"settings://connectors/{cid}"
@@ -57,8 +70,7 @@ def _validated_snapshot_row(row: Any) -> Notice:
     link = row["settings_deep_link"]
     if type(cid) is not str or not cid or len(cid) > MAX_CONNECTOR_ID_CHARS:
         raise ValueError("invalid connector_id")
-    if type(events) is not tuple or not events or any(type(x) is not str for x in events):
-        raise ValueError("invalid notice events")
+    events = _validated_events(events, allow_empty=False)
     if type(link) is not str or link != f"settings://connectors/{cid}":
         raise ValueError("invalid settings deep link")
     until = row["dismissed_until"]
@@ -96,6 +108,8 @@ class NoticeStore:
         if not important or not events:
             self._notices.pop(cid, None)
             return
+        if cid not in self._notices and len(self._notices) >= MAX_NOTICES:
+            raise ValueError("connector notice capacity exceeded")
         old = self._notices.get(cid)
         keep_snooze = old is not None and old.events == events
         self._notices[cid] = Notice(
