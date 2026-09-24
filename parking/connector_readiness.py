@@ -4,6 +4,7 @@ Providers report normalized capability/auth health; Captain derives UI state and
 never performs authentication, network calls, or paid API usage here.
 """
 import re
+from datetime import datetime
 
 AUTH_METHODS = {"none", "oauth", "api_key", "id_based", "local_session"}
 HEALTH_STATUSES = {"unknown", "healthy", "degraded", "blocked"}
@@ -16,6 +17,7 @@ MAX_CONNECTOR_ID = 128
 MAX_PERMISSION_LABEL = 128
 MAX_PERMISSIONS = 128
 CONNECTOR_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+RFC3339_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$")
 
 
 def _label(value, field, *, allow_empty=False, max_length=MAX_LABEL):
@@ -31,6 +33,19 @@ def _enum(value, field, allowed):
     """Normalize provider-controlled enum values without reflecting diagnostics."""
     value = _label(value, field)
     return value if value in allowed else "unknown"
+
+
+def _checked_at(value):
+    """Preserve only a bounded, real RFC3339 instant; malformed metadata is null."""
+    if value is None:
+        return None
+    if type(value) is not str or len(value) > MAX_LABEL or RFC3339_RE.fullmatch(value) is None:
+        return None
+    try:
+        datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError:
+        return None
+    return value
 
 
 def evaluate(connector):
@@ -68,11 +83,9 @@ def evaluate(connector):
     health_status = _enum(health.get("status", "unknown"), "health.status", HEALTH_STATUSES)
     auth_status = _enum(health.get("auth_status", "unknown"), "health.auth_status", AUTH_STATUSES)
     version_status = _enum(health.get("provider_version_status", "unknown"), "health.provider_version_status", VERSION_STATUSES)
-    # checked_at is metadata, never authority. Preserve only plain bounded strings;
+    # checked_at is metadata, never authority. Preserve only a real RFC3339 instant;
     # malformed/provider-controlled values become null rather than leaking diagnostics.
-    checked_at = health.get("checked_at")
-    if checked_at is not None and (type(checked_at) is not str or len(checked_at) > MAX_LABEL):
-        checked_at = None
+    checked_at = _checked_at(health.get("checked_at"))
     auth_ok = auth_method_known and auth_status in GOOD_AUTH
     if auth_method != "none" and auth_status == "not_required": auth_ok = False
     if auth_method == "none" and auth_status != "not_required": auth_ok = False
