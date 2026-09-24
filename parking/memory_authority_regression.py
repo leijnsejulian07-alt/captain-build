@@ -30,7 +30,34 @@ def run():
     assert rejected({**BASE, "repo_scope_hash": "C:/raw/project"})
     assert rejected({k: v for k, v in BASE.items() if k != "project_id"})
     assert rejected({**BASE, "repo_scope": "raw/path"})
+    assert rejected({**BASE, "chat_id": "x" * 257})
+    assert rejected({**BASE, "project_id": "x" * 257})
     assert not project_memory_visible({**BASE, "state_epoch": "7"}, BASE)
+
+    # Hostile scalar subclasses must be rejected before caller hooks can run.
+    calls = []
+
+    class EvilStr(str):
+        def strip(self, *args, **kwargs):
+            calls.append("strip")
+            raise AssertionError("hostile strip hook executed")
+
+        def __eq__(self, other):
+            calls.append("eq")
+            raise AssertionError("hostile equality hook executed")
+
+        __hash__ = str.__hash__
+
+    class EvilInt(int):
+        def __lt__(self, other):
+            calls.append("lt")
+            raise AssertionError("hostile comparison hook executed")
+
+    assert rejected({**BASE, "chat_id": EvilStr("chat-a")})
+    assert rejected({**BASE, "project_id": EvilStr("project-a")})
+    assert rejected({**BASE, "repo_scope_hash": EvilStr(H)})
+    assert rejected({**BASE, "state_epoch": EvilInt(7)})
+    assert calls == []
 
     # Normal non-project chat must stay outside this project-memory parser.
     normal_chat = {"chat_id": "ordinary-chat", "message": "hello"}
