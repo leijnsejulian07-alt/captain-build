@@ -41,11 +41,21 @@ def run():
     for method in (None, "", "magic", 123):
         x = base(auth_method=method); x["health"] = dict(x["health"], auth_status="not_required")
         out = evaluate(x); assert out["ready"] is False and "auth_method_invalid" in out["blockers"]
+
+    # Unknown provider strings fail closed and are never reflected into UI state.
     x = base(); x["health"] = {"status": "broken: token=super-secret", "auth_status": "expired: sk-secret", "provider_version_status": "unknown: C:\\Users\\Julian"}
     out = evaluate(x); assert out["blockers"] == ("auth_unhealthy", "health_unhealthy", "provider_compatibility_unverified")
-    assert "secret" not in repr(out["blockers"]).lower() and "julian" not in repr(out["blockers"]).lower()
+    assert out["health"] == {"status": "unknown", "auth_status": "unknown", "provider_version_status": "unknown"}
+    assert "secret" not in repr(out).lower() and "julian" not in repr(out).lower()
     out = evaluate(base(permissions=["write", "read", "read", "", None]))
     assert out["permissions"] == ("read", "write")
+
+    # Match the canonical connector-state schema's identifier and permission bounds.
+    for bad_id in ("GitHub", "github/settings", "github?x=1", ".github", "github oauth", "x" * 129):
+        rejected(base(connector_id=bad_id))
+    rejected(base(permissions=["x" * 129]))
+    rejected(base(permissions=["p"] * 129))
+    assert evaluate(base(connector_id="github-enterprise.v2"))["connector_id"] == "github-enterprise.v2"
 
     touched = []
     class EvilDict(dict):
@@ -65,9 +75,6 @@ def run():
     assert touched == []
 
     # Bound provider-controlled scalar/cardinality inputs to avoid Settings DoS.
-    rejected(base(connector_id="x" * 257))
-    rejected(base(permissions=["p"] * 129))
-    rejected(base(permissions=["x" * 257]))
     for field in ("status", "auth_status", "provider_version_status"):
         x = base(); x["health"] = dict(x["health"], **{field: "x" * 257}); rejected(x)
     assert evaluate(base())["ready"] is True
