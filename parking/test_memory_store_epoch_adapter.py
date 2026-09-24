@@ -22,9 +22,9 @@ def must_reject(store, value):
     raise AssertionError(f"unsafe memory value accepted: {type(value).__name__}")
 
 
-def must_reject_write(store, *, key="x", provenance=None):
+def must_reject_write(store, *, key="x", value=1, provenance=None):
     provenance = provenance or {"source": "captain", "kind": "derived"}
-    try: store.write_project(BASE, key=key, value=1, provenance=provenance)
+    try: store.write_project(BASE, key=key, value=value, provenance=provenance)
     except MemoryAuthorityError: return
     raise AssertionError("unsafe memory metadata accepted")
 
@@ -49,6 +49,16 @@ def run():
                         provenance={"source": "captain", "kind": "derived"})
     assert len(store.read_project(BASE)) == 1
     assert store.read_project(BASE)[0].value == {"choice": "updated"}
+
+    # Rejected replacement candidates are atomic: trusted memory remains exactly
+    # as it was before the failed write, including provenance and context output.
+    before_records = store.read_project(BASE)
+    before_context = store.build_context(BASE)
+    must_reject_write(store, key="decision", value=float("nan"))
+    must_reject_write(store, key="decision", value={"bad": (1, 2)})
+    must_reject_write(store, key="decision", provenance={"source": "captain"})
+    assert store.read_project(BASE) == before_records
+    assert store.build_context(BASE) == before_context
 
     for field, value in (("state_epoch", 5), ("chat_id", "chat-b"),
                          ("project_id", "project-b"), ("repo_scope_hash", H2)):
@@ -99,7 +109,7 @@ def run():
     assert len(store.read_project(full_auth)) == MAX_RECORDS_PER_AUTHORITY
     assert store.read_project(full_auth)[0].value == "replacement"
     assert len(store.read_project(BASE)) == 1
-    print("PASS: project memory authority, payload, metadata and cardinality boundaries fail closed")
+    print("PASS: project memory authority, payload, metadata, atomicity and cardinality boundaries fail closed")
 
 
 if __name__ == "__main__": run()
