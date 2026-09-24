@@ -93,9 +93,6 @@ class EpochBoundMemoryStore:
 
     def write_project(self, authority: Mapping[str, Any], *, key: str, value: Any,
                       provenance: Mapping[str, Any]) -> None:
-        # Validate and detach the entire candidate before inspecting or mutating
-        # existing state. A rejected write therefore cannot partially replace,
-        # append, evict, or otherwise perturb previously trusted memory.
         auth = MemoryAuthority.parse(authority)
         clean_key = _bounded_label(key, field="memory key", limit=MAX_KEY_CHARS)
         if type(provenance) is not dict:
@@ -110,7 +107,6 @@ class EpochBoundMemoryStore:
         clean_value = _snapshot_json(value)
         incoming = MemoryRecord(auth, clean_key, clean_value,
                                 {"source": source, "kind": kind})
-
         matching = [i for i, record in enumerate(self._records)
                     if auth.permits(record.authority)]
         for index in matching:
@@ -123,12 +119,12 @@ class EpochBoundMemoryStore:
 
     def advance_project_epoch(self, previous: Mapping[str, Any],
                               current: Mapping[str, Any]) -> int:
-        """Retire only the exact previous epoch after a validated Project State advance.
+        """Retire every stale epoch in this exact scope after a validated advance.
 
-        This is deliberately destructive only after both authorities parse and prove
-        identical chat/project/repo scope plus a strictly increasing epoch. It lets
-        Captain's Project State lifecycle remove stale persisted memory instead of
-        merely making it unreadable. It never migrates old memory into the new epoch.
+        Project State may legitimately jump epochs after missed/replayed events. Keeping
+        older same-scope epochs would make snapshots accumulate unreachable context.
+        Validation happens before mutation; records from other scopes and records at or
+        ahead of the new epoch are never touched. Old memory is never auto-migrated.
         """
         old = MemoryAuthority.parse(previous)
         new = MemoryAuthority.parse(current)
@@ -136,7 +132,15 @@ class EpochBoundMemoryStore:
                       and old.repo_scope_hash == new.repo_scope_hash)
         if not same_scope or new.state_epoch <= old.state_epoch:
             raise MemoryAuthorityError("project memory epoch transition invalid")
-        kept = [record for record in self._records if not old.permits(record.authority)]
+
+        def stale_same_scope(record: MemoryRecord) -> bool:
+            authority = record.authority
+            return (authority.chat_id == new.chat_id
+                    and authority.project_id == new.project_id
+                    and authority.repo_scope_hash == new.repo_scope_hash
+                    and authority.state_epoch < new.state_epoch)
+
+        kept = [record for record in self._records if not stale_same_scope(record)]
         removed = len(self._records) - len(kept)
         self._records = kept
         return removed
