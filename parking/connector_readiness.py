@@ -68,6 +68,11 @@ def evaluate(connector):
     health_status = _enum(health.get("status", "unknown"), "health.status", HEALTH_STATUSES)
     auth_status = _enum(health.get("auth_status", "unknown"), "health.auth_status", AUTH_STATUSES)
     version_status = _enum(health.get("provider_version_status", "unknown"), "health.provider_version_status", VERSION_STATUSES)
+    # checked_at is metadata, never authority. Preserve only plain bounded strings;
+    # malformed/provider-controlled values become null rather than leaking diagnostics.
+    checked_at = health.get("checked_at")
+    if checked_at is not None and (type(checked_at) is not str or len(checked_at) > MAX_LABEL):
+        checked_at = None
     auth_ok = auth_method_known and auth_status in GOOD_AUTH
     if auth_method != "none" and auth_status == "not_required": auth_ok = False
     if auth_method == "none" and auth_status != "not_required": auth_ok = False
@@ -86,6 +91,6 @@ def evaluate(connector):
         "connector_id": connector_id, "installed": installed, "connected": connected,
         "enabled": enabled, "ready": ready, "auth_method": auth_method,
         "permissions": permissions, "blockers": tuple(blockers),
-        "health": {"status": health_status, "auth_status": auth_status,
-                   "provider_version_status": version_status},
+        "health": {"status": health_status, "checked_at": checked_at,
+                   "auth_status": auth_status, "provider_version_status": version_status},
     }
