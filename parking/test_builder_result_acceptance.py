@@ -39,5 +39,24 @@ class BuilderResultAcceptanceTests(unittest.TestCase):
         for sensitive in ("c1","p1","repo/a","b1"):
             self.assertNotIn(sensitive, reason)
 
+    def test_hostile_owner_shapes_fail_closed(self):
+        bad = [
+            owner(epoch=True), owner(epoch=-1), owner(epoch="7"),
+            owner(chat_id=123), owner(chat_id="   "),
+            owner(builder_session_id=None), owner(builder_session_id="   "),
+            owner(project_id="   ", repo_scope="repo/a"),
+            owner(project_id="p1", repo_scope="   "),
+        ]
+        for actual in bad:
+            with self.subTest(actual=repr(actual)):
+                self.assertFalse(accept_builder_result(owner(), actual))
+                self.assertEqual(rejection_reason(owner(), actual), "invalid_owner")
+
+    def test_hostile_expected_owner_is_classified_separately(self):
+        for expected in (owner(epoch=True), owner(epoch=-1), owner(chat_id="   ")):
+            with self.subTest(expected=repr(expected)):
+                self.assertFalse(accept_builder_result(expected, owner()))
+                self.assertEqual(rejection_reason(expected, owner()), "invalid_expected_owner")
+
 if __name__ == "__main__":
     unittest.main()
