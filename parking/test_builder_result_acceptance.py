@@ -21,7 +21,7 @@ class BuilderResultAcceptanceTests(unittest.TestCase):
 
     def test_malformed_project_scope_is_rejected(self):
         self.assertFalse(accept_builder_result(owner(), owner(repo_scope="")))
-        self.assertEqual(rejection_reason(owner(), owner(repo_scope="")), "invalid_scope")
+        self.assertEqual(rejection_reason(owner(), owner(repo_scope="")), "invalid_owner")
 
     def test_normal_non_project_chat_still_works(self):
         x=owner(project_id="", repo_scope="")
