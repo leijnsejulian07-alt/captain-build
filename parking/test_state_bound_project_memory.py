@@ -5,9 +5,12 @@ from memory_authority import MemoryAuthorityError
 from state_bound_project_memory import StateBoundProjectMemory
 
 H = "a" * 64
+H2 = "b" * 64
 E4 = {"chat_id": "chat-a", "project_id": "project-a", "repo_scope_hash": H, "state_epoch": 4}
 E5 = {**E4, "state_epoch": 5}
-OTHER = {**E4, "project_id": "project-b"}
+OTHER_PROJECT = {**E4, "project_id": "project-b"}
+OTHER_CHAT = {**E4, "chat_id": "chat-b"}
+OTHER_REPO = {**E4, "repo_scope_hash": H2}
 PROV = {"source": "captain", "kind": "derived"}
 
 
@@ -29,10 +32,15 @@ def run():
     memory.write(key="decision", value={"v": 5}, provenance=PROV)
     assert memory.build_context()[0]["value"] == {"v": 5}
 
-    # Cross-project context never becomes visible.
-    state["current"] = OTHER
-    assert memory.read() == ()
-    assert memory.build_context() == ()
+    # Every authority-wall dimension is isolated independently.
+    for foreign in (OTHER_PROJECT, OTHER_CHAT, OTHER_REPO):
+        state["current"] = foreign
+        assert memory.read() == ()
+        assert memory.build_context() == ()
+
+    # Returning to the current live scope restores only that scope's epoch-5 memory.
+    state["current"] = E5
+    assert memory.build_context()[0]["value"] == {"v": 5}
 
     # Returning to an older epoch for the original scope fails closed.
     state["current"] = E4
@@ -51,7 +59,7 @@ def run():
     assert memory.read() == ()
     assert memory.build_context() == ()
 
-    print("PASS: live resolver owns memory authority; stale/cross-project context is inaccessible")
+    print("PASS: live resolver owns memory authority; stale/cross-project/cross-chat/cross-repo context is inaccessible")
 
 
 if __name__ == "__main__":
