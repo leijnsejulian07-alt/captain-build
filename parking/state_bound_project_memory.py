@@ -70,5 +70,3 @@ class StateBoundProjectMemory:
             return ()
         return self.__facade.build_current_context(current)
 
-    def snapshot_for_persistence(self) -> dict[str, Any]:
-        return self.__facade.snapshot_for_persistence()
