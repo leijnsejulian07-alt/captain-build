@@ -18,7 +18,7 @@ def run():
     state = {"current": E4}
     memory = StateBoundProjectMemory(lambda: state["current"])
 
-    # Runtime surface cannot accept caller-supplied authority/current.
+    # Runtime/plugin surface must not expose an all-scope persistence export.\n    assert not hasattr(memory, "snapshot_for_persistence")\n\n    # Runtime surface cannot accept caller-supplied authority/current.
     for name in ("write", "read", "build_context"):
         params = inspect.signature(getattr(memory, name)).parameters
         assert "current" not in params and "authority" not in params
